@@ -19,6 +19,7 @@ export {
 export {
   checkpointKey,
   fragmentKey,
+  jsonLine,
   parseFragment,
   serializeFragment,
   sha256Hex,
@@ -31,10 +32,13 @@ export {
   type FragmentRef,
   type Manifest,
 } from "./manifest.js";
-export { casUpdate, type CasStore, type CasUpdateOptions } from "./cas.js";
+export { casUpdate, prefixStore, type CasStore, type CasUpdateOptions } from "./cas.js";
 export {
   createS3CasStore,
   createS3Client,
+  isNotFound,
+  isPreconditionFailed,
+  quoteEtag,
   S3CasStore,
   S3SessionLog,
   type S3SessionLogOptions,

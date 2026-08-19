@@ -2,12 +2,16 @@
 #
 #   dsh plugin --profile web add github:gengmao/dsh-session-s3
 #
-# Leave accessKeyId / secretAccessKey unset so the AWS SDK default chain
-# (shared credentials, AWS_PROFILE, SSO, IAM role) can supply session tokens.
-# Static keys in this file skip AWS_SESSION_TOKEN and break SSO / assume-role.
+# This file is plain YAML (no !!js tags). After install, set bucket / region /
+# endpoint in the profile overlay ($DSH_HOME/profiles/<name>/cordis.patch.yml)
+# or pass them as plugin config. Leave accessKeyId / secretAccessKey unset so
+# the AWS SDK default chain (shared credentials, AWS_PROFILE, SSO, IAM role)
+# can supply session tokens.
 #
-# Override bucket / region / endpoint in the profile cordis.patch.yml, or set:
-#   DSH_S3_BUCKET, DSH_S3_PREFIX, DSH_S3_REGION, DSH_S3_ENDPOINT
+# Identifiers:
+#   profile slot id  = sessions          (replaces dsh-session-persistence-jsonl)
+#   plugin package   = dsh-session-s3
+#   cordis.yml id    = dsh-session-persistence-s3
 #
 # Caveat: this plugin currently exposes SessionPersistenceProvider
 # (load/append/read/compact/close), not the full upstream SessionPersistence
@@ -17,10 +21,8 @@
 - id: sessions
   name: dsh-session-s3
   config:
-    bucket: !!js process.env.DSH_S3_BUCKET
-    prefix: !!js process.env.DSH_S3_PREFIX ?? 'dsh/'
-    region: !!js process.env.DSH_S3_REGION ?? 'auto'
-    endpoint: !!js process.env.DSH_S3_ENDPOINT
-    forcePathStyle: !!js process.env.DSH_S3_ENDPOINT !== undefined
+    bucket: my-sessions
+    prefix: dsh/
+    region: auto
     flushThresholdEvents: 50
     flushThresholdBytes: 262144

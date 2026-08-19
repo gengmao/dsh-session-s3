@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { S3SessionLog } from "../src/s3log.js";
-import { FragmentCorruptError, S3LogError } from "../src/errors.js";
+import { FragmentCorruptError, S3LogError, CasRetryExhaustedError, ManifestCorruptError } from "../src/errors.js";
 import { fragmentKey, serializeFragment, sha256Hex } from "../src/fragment.js";
 import { emptyManifest, serializeManifestBuffer, type Manifest } from "../src/manifest.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
@@ -83,6 +83,75 @@ describe("S3SessionLog", () => {
     await resumed.flush();
     expect(store.keys()).toContain("fragments/00000003.jsonl");
     expect(await resumed.readAll()).toEqual([event(0), event(1)]);
+  });
+
+  it("monotonic seq skips two consecutive orphan fragments (no ping-pong)", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    log.append(event(0));
+    await log.flush();
+    await store.putIfAbsent("fragments/00000002.jsonl", serializeFragment([event(98)]));
+    await store.putIfAbsent("fragments/00000003.jsonl", serializeFragment([event(99)]));
+
+    const resumed = await openLog(store);
+    resumed.append(event(1));
+    await resumed.flush();
+    expect(store.keys()).toContain("fragments/00000004.jsonl");
+    expect(await resumed.readAll()).toEqual([event(0), event(1)]);
+  });
+
+  it("keeps events appended while flush is in flight", async () => {
+    const store = new MemoryCasStore({ delayMs: 20 });
+    const log = await openLog(store);
+    log.append(event(0));
+    const flushing = log.flush();
+    await new Promise((r) => setTimeout(r, 5));
+    log.append(event(1));
+    await flushing;
+    expect(log.pending).toEqual([event(1)]);
+    await log.flush();
+    expect(await log.readAll()).toEqual([event(0), event(1)]);
+    expect(log.pending).toEqual([]);
+  });
+
+  it("serialized concurrent flush() calls do not duplicate or drop", async () => {
+    const store = new MemoryCasStore({ delayMs: 2 });
+    const log = await openLog(store);
+    log.append(event(0));
+    const first = log.flush();
+    log.append(event(1));
+    const second = log.flush();
+    await Promise.all([first, second]);
+    expect(await log.readAll()).toEqual([event(0), event(1)]);
+    expect(log.pending).toEqual([]);
+  });
+
+  it("fragment PUT exhaustion throws CasRetryExhaustedError", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    store.failNextPutIfAbsent = 20;
+    log.append(event(0));
+    await expect(log.flush()).rejects.toBeInstanceOf(CasRetryExhaustedError);
+    expect(log.pending).toEqual([event(0)]);
+  });
+
+  it("open rejects a manifest whose session_id does not match", async () => {
+    const store = new MemoryCasStore();
+    await openLog(store, "alpha");
+    await expect(openLog(store, "beta")).rejects.toBeInstanceOf(ManifestCorruptError);
+  });
+
+  it("trim(0) deletes every fragment", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    log.append(event(0));
+    await log.flush();
+    log.append(event(1));
+    await log.flush();
+    await log.trim(0);
+    expect(log.stats.fragmentCount).toBe(0);
+    expect(await log.readAll()).toEqual([]);
+    expect(store.keys()).toEqual(["manifest.json"]);
   });
 
   it("throws FragmentCorruptError on sha256 mismatch", async () => {

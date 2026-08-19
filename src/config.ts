@@ -56,6 +56,16 @@ export function parseConfig(input: unknown): ResolvedPluginConfig {
   if (cfg.secretAccessKey && !cfg.accessKeyId) {
     issues.push("accessKeyId: required when secretAccessKey is set");
   }
+  if (cfg.endpoint) {
+    try {
+      const url = new URL(cfg.endpoint);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        issues.push("endpoint: must be an http(s) URL");
+      }
+    } catch {
+      issues.push("endpoint: must be a valid URL");
+    }
+  }
   if (issues.length > 0) throw new ConfigError(issues);
 
   const endpoint = cfg.endpoint;

@@ -52,6 +52,11 @@ describe("fragment", () => {
     expect(() => fragmentKey(1.5)).toThrow(FragmentCorruptError);
   });
 
+  it("throws when JSON.stringify yields undefined (functions, undefined)", () => {
+    expect(() => serializeFragment([undefined])).toThrow(FragmentCorruptError);
+    expect(() => serializeFragment([() => 1])).toThrow(/not JSON-serializable/);
+  });
+
   it("computes a stable sha256", () => {
     const buf = serializeFragment([{ n: 1 }]);
     expect(sha256Hex(buf)).toBe(sha256Hex(Buffer.from(buf)));

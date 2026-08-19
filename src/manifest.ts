@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { ManifestCorruptError } from "./errors.js";
 
+const sessionHeaderSchema = z
+  .object({
+    version: z.number(),
+    id: z.string().min(1),
+    createdAt: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
 const fragmentRefSchema = z.object({
   seq: z.number().int().positive(),
   key: z.string().min(1),
@@ -18,6 +26,7 @@ const checkpointRefSchema = z.object({
 const manifestSchema = z.object({
   version: z.literal(1),
   session_id: z.string().min(1),
+  header: sessionHeaderSchema.nullable().optional(),
   fragments: z.array(fragmentRefSchema),
   total_events: z.number().int().nonnegative(),
   total_bytes: z.number().int().nonnegative(),
@@ -33,6 +42,7 @@ export function emptyManifest(sessionId: string): Manifest {
   return {
     version: 1,
     session_id: sessionId,
+    header: null,
     fragments: [],
     total_events: 0,
     total_bytes: 0,

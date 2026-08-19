@@ -142,4 +142,17 @@ describe("provider delegation", () => {
     expect(store.keys().some((k) => k.startsWith("fragments/"))).toBe(false);
     expect(await p.read("s")).toEqual([{ n: 1 }, { n: 2 }]);
   });
+
+  it("concurrent first-appends share one open() and keep both events", async () => {
+    const store = new MemoryCasStore({ delayMs: 5 });
+    const p = provider(store, { flushThresholdEvents: 1000 });
+    await Promise.all([p.append("race", { n: 1 }), p.append("race", { n: 2 })]);
+    expect(await p.read("race")).toEqual(expect.arrayContaining([{ n: 1 }, { n: 2 }]));
+    expect(await p.read("race")).toHaveLength(2);
+  });
+
+  it("rejects a non-http(s) endpoint", () => {
+    expect(() => parseConfig({ bucket: "b", endpoint: "not a url" })).toThrow(/endpoint/);
+    expect(() => parseConfig({ bucket: "b", endpoint: "ftp://x" })).toThrow(/endpoint/);
+  });
 });

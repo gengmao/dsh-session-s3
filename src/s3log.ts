@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   type S3ClientConfig,
@@ -8,10 +9,11 @@ import {
 import { casUpdate, type CasStore, type CasUpdateOptions } from "./cas.js";
 import type { ResolvedPluginConfig } from "./config.js";
 import { sessionKeyPrefix } from "./config.js";
-import { CasConflictError, FragmentCorruptError, S3AccessError, S3LogError } from "./errors.js";
+import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, ManifestCorruptError, S3AccessError, S3LogError } from "./errors.js";
 import {
   checkpointKey,
   fragmentKey,
+  jsonLine,
   parseFragment,
   serializeFragment,
   sha256Hex,
@@ -42,11 +44,15 @@ const DEFAULT_FLUSH_BYTES = 262144;
 const MANIFEST_KEY = "manifest.json";
 const MAX_FRAGMENT_PUT_RETRIES = 10;
 
-function stripEtag(etag: string | undefined): string {
-  return (etag ?? "").replaceAll('"', "");
+/** HTTP If-Match / If-None-Match require a quoted entity-tag (RFC 9110). */
+export function quoteEtag(etag: string | undefined): string {
+  if (!etag) return "";
+  const trimmed = etag.trim();
+  if (trimmed === "*" || trimmed.startsWith('"') || trimmed.startsWith("W/\"")) return trimmed;
+  return `"${trimmed}"`;
 }
 
-function statusOf(error: unknown): number | undefined {
+export function statusOf(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const meta = (error as { $metadata?: { httpStatusCode?: number } }).$metadata;
   return meta?.httpStatusCode;
@@ -57,24 +63,30 @@ function nameOf(error: unknown): string {
   return "";
 }
 
-function isNotFound(error: unknown): boolean {
+function codeOf(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "";
+  const rec = error as { Code?: string; code?: string };
+  return rec.Code ?? rec.code ?? "";
+}
+
+export function isNotFound(error: unknown): boolean {
   const status = statusOf(error);
   const name = nameOf(error);
+  const code = codeOf(error);
   return (
     status === 404 ||
     name === "NoSuchKey" ||
     name === "NotFound" ||
-    (typeof error === "object" &&
-      error !== null &&
-      "Code" in error &&
-      (error as { Code?: string }).Code === "NoSuchKey")
+    code === "NoSuchKey" ||
+    code === "NotFound"
   );
 }
 
-function isPreconditionFailed(error: unknown): boolean {
+export function isPreconditionFailed(error: unknown): boolean {
   const status = statusOf(error);
   const name = nameOf(error);
-  return status === 412 || name === "PreconditionFailed" || name === "412";
+  const code = codeOf(error);
+  return status === 412 || name === "PreconditionFailed" || name === "412" || code === "PreconditionFailed";
 }
 
 function wrapS3(error: unknown, action: string, key: string): never {
@@ -104,7 +116,7 @@ export class S3CasStore implements CasStore {
         new GetObjectCommand({ Bucket: this.bucket, Key: objectKey }),
       );
       const bytes = out.Body ? await out.Body.transformToByteArray() : new Uint8Array();
-      return { body: Buffer.from(bytes), etag: stripEtag(out.ETag) };
+      return { body: Buffer.from(bytes), etag: quoteEtag(out.ETag) };
     } catch (error) {
       if (isNotFound(error)) return null;
       wrapS3(error, "GET", objectKey);
@@ -131,6 +143,31 @@ export class S3CasStore implements CasStore {
     }
   }
 
+  async listKeys(prefix = ""): Promise<string[]> {
+    const keys: string[] = [];
+    const objectPrefix = this.fullKey(prefix);
+    let token: string | undefined;
+    try {
+      do {
+        const out = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: this.bucket,
+            Prefix: objectPrefix,
+            ContinuationToken: token,
+          }),
+        );
+        for (const obj of out.Contents ?? []) {
+          if (!obj.Key) continue;
+          keys.push(obj.Key.slice(this.keyPrefix.length));
+        }
+        token = out.IsTruncated === true ? out.NextContinuationToken : undefined;
+      } while (token);
+      return keys;
+    } catch (error) {
+      wrapS3(error, "LIST", objectPrefix);
+    }
+  }
+
   private async put(
     key: string,
     body: Buffer,
@@ -144,11 +181,15 @@ export class S3CasStore implements CasStore {
           Key: objectKey,
           Body: body,
           ContentType: key.endsWith(".json") ? "application/json" : "application/x-ndjson",
-          ...(cond.ifMatch ? { IfMatch: cond.ifMatch } : {}),
+          ...(cond.ifMatch ? { IfMatch: quoteEtag(cond.ifMatch) } : {}),
           ...(cond.ifNoneMatch ? { IfNoneMatch: cond.ifNoneMatch } : {}),
         }),
       );
-      return stripEtag(out.ETag) || sha256Hex(body);
+      const etag = quoteEtag(out.ETag);
+      if (!etag) {
+        throw new S3AccessError(`PUT ${objectKey} succeeded without an ETag`);
+      }
+      return etag;
     } catch (error) {
       if (isPreconditionFailed(error)) throw new CasConflictError(`412 on ${objectKey}`);
       wrapS3(error, "PUT", objectKey);
@@ -186,6 +227,7 @@ export class S3SessionLog {
   private readonly flushThresholdEvents: number;
   private readonly flushThresholdBytes: number;
   private readonly casOpts?: CasUpdateOptions;
+  private flushTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly store: CasStore,
@@ -216,11 +258,17 @@ export class S3SessionLog {
       );
       return new S3SessionLog(store, sessionId, opts, created.value);
     }
-    return new S3SessionLog(store, sessionId, opts, parseManifestBuffer(existing.body));
+    const parsed = parseManifestBuffer(existing.body);
+    if (parsed.session_id !== sessionId) {
+      throw new ManifestCorruptError(
+        `manifest session_id "${parsed.session_id}" does not match open("${sessionId}")`,
+      );
+    }
+    return new S3SessionLog(store, sessionId, opts, parsed);
   }
 
   append(event: unknown): void {
-    const encoded = Buffer.byteLength(JSON.stringify(event), "utf8");
+    const encoded = Buffer.byteLength(jsonLine(event), "utf8") + 1;
     this.buffer.push(event);
     this.bufferBytes += encoded;
   }
@@ -234,11 +282,32 @@ export class S3SessionLog {
   }
 
   async flush(): Promise<void> {
+    const run = this.flushTail.then(
+      () => this.flushOnce(),
+      () => this.flushOnce(),
+    );
+    this.flushTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async flushOnce(): Promise<void> {
     if (this.buffer.length === 0) return;
 
-    const events = this.buffer.slice();
+    const count = this.buffer.length;
+    const events = this.buffer.slice(0, count);
     const body = serializeFragment(events);
     const digest = sha256Hex(body);
+
+    await this.reloadManifest();
+    const last = this.manifest.fragments[this.manifest.fragments.length - 1];
+    if (last && last.sha256 === digest && last.events === events.length) {
+      this.dropFlushed(count);
+      return;
+    }
+
     let seq = this.nextSeq();
     let key = fragmentKey(seq);
 
@@ -249,11 +318,13 @@ export class S3SessionLog {
       } catch (error) {
         if (!(error instanceof CasConflictError)) throw error;
         if (attempt === MAX_FRAGMENT_PUT_RETRIES) {
-          throw error;
+          const exhausted = new CasRetryExhaustedError(key, attempt + 1);
+          if (error instanceof Error) exhausted.cause = error;
+          throw exhausted;
         }
         await this.reloadManifest();
         const fromManifest = this.nextSeq();
-        seq = fromManifest === seq ? seq + 1 : fromManifest;
+        seq = Math.max(fromManifest, seq + 1);
         key = fragmentKey(seq);
       }
     }
@@ -275,8 +346,7 @@ export class S3SessionLog {
       this.casOpts,
     );
     this.manifest = updated.value;
-    this.buffer = [];
-    this.bufferBytes = 0;
+    this.dropFlushed(count);
   }
 
   async readAll(): Promise<unknown[]> {
@@ -366,10 +436,19 @@ export class S3SessionLog {
     }
     await this.flush();
     await this.reloadManifest();
-    if (this.manifest.fragments.length <= keepLastNFragments) return;
+    if (keepLastNFragments === 0) {
+      // drop everything
+    } else if (this.manifest.fragments.length <= keepLastNFragments) {
+      return;
+    }
 
-    const kept = this.manifest.fragments.slice(-keepLastNFragments);
-    const dropped = this.manifest.fragments.slice(0, -keepLastNFragments);
+    const kept =
+      keepLastNFragments === 0 ? [] : this.manifest.fragments.slice(-keepLastNFragments);
+    const dropped =
+      keepLastNFragments === 0
+        ? this.manifest.fragments.slice()
+        : this.manifest.fragments.slice(0, -keepLastNFragments);
+    if (dropped.length === 0) return;
     for (const ref of kept) {
       await this.readFragment(ref);
     }
@@ -428,6 +507,14 @@ export class S3SessionLog {
     };
   }
 
+  private dropFlushed(count: number): void {
+    this.buffer = this.buffer.slice(count);
+    this.bufferBytes = this.buffer.reduce<number>(
+      (sum, event) => sum + Buffer.byteLength(jsonLine(event), "utf8") + 1,
+      0,
+    );
+  }
+
   private nextSeq(): number {
     const last = this.manifest.fragments[this.manifest.fragments.length - 1];
     return last ? last.seq + 1 : 1;
@@ -440,6 +527,8 @@ export class S3SessionLog {
 
   private appendFragmentRef(manifest: Manifest, ref: FragmentRef): Manifest {
     if (manifest.fragments.some((f) => f.seq === ref.seq)) return manifest;
+    const last = manifest.fragments[manifest.fragments.length - 1];
+    if (last && last.sha256 === ref.sha256 && last.events === ref.events) return manifest;
     return {
       ...manifest,
       fragments: [...manifest.fragments, ref],

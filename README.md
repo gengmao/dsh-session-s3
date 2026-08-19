@@ -201,10 +201,10 @@ A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifes
 
 | Backend | If-Match / If-None-Match | Phase 1 |
 | --- | --- | --- |
-| AWS S3 | yes | supported |
-| Cloudflare R2 | yes | supported |
-| Tigris | yes | supported |
-| MinIO | yes | supported |
+| AWS S3 | yes (quoted ETags) | intended; live IT env-gated |
+| Cloudflare R2 | yes | intended |
+| Tigris | yes | intended |
+| MinIO | yes | intended; `S3_IT=1` against local MinIO |
 | GCS (S3 interop) | weak / eventual on some paths | use with care |
 | SeaweedFS | version-dependent | use with care |
 
@@ -223,12 +223,16 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 1. **DSH seam.** `SessionPersistenceProvider` here is `load` / `append` / `read` / `compact` / `close`. Upstream `SessionPersistence` (`@deepseek-ai/dsh-session-persistence`) is a Cordis `Service` with `locate` / `create` / `prepare` / `inspect` / `readFrom` / `list` / `listSnapshots`. Reconcile against the real interface before using this as a drop-in for `dsh-session-persistence-jsonl`.
 2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
 3. **Payload `seq`.** This plugin stores opaque events. Colliding coordinator-assigned `SessionEvent.seq` values remain detectable but not fatal (see [docs/corruption-scenarios.md](docs/corruption-scenarios.md)).
+4. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256; a lost response after a *fragment* PUT (orphan) is skipped. A lost response after CAS still cannot invent a new seq for the same bytes.
+5. **`read()` includes the in-memory buffer** (not yet durable). `compact()` / `close()` flush first. Call `close` (or wait for a threshold flush) before treating `read()` as durable.
+6. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError` — indistinguishable from bitrot. Phase 1 assumes one writer and no trim-during-read.
+7. **Single-writer per session.** Two `S3SessionLog` instances on the same session id coordinate via CAS, but `trim` and `checkpoint` are not designed for concurrent readers.
 
 ## Roadmap
 
+- Wire the real upstream `SessionPersistence` seam + reject appends whose first seq ≠ stored next-seq
 - Phase 2 — setsum / global log verification, verified GC
 - Optional — binary fragments, DynamoDB Streams notifications
-- Wire the real upstream `SessionPersistence` seam + reject appends whose first seq ≠ stored next-seq
 
 ## Develop
 

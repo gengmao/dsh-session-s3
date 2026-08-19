@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
 import { FragmentCorruptError } from "./errors.js";
 
-export function serializeFragment(events: unknown[]): Buffer {
+export function jsonLine(event: unknown, index = 0): string {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(event);
+  } catch (cause) {
+    throw new FragmentCorruptError(`event ${index} is not JSON-serializable`, { cause });
+  }
+  if (typeof json !== "string") {
+    throw new FragmentCorruptError(`event ${index} is not JSON-serializable`);
+  }
+  return json;
+}
+
+export function serializeFragment(events: readonly unknown[]): Buffer {
   if (events.length === 0) return Buffer.alloc(0);
-  const lines = events.map((event, index) => {
-    try {
-      return JSON.stringify(event);
-    } catch (cause) {
-      throw new FragmentCorruptError(`event ${index} is not JSON-serializable`, { cause });
-    }
-  });
+  const lines = events.map((event, index) => jsonLine(event, index));
   return Buffer.from(`${lines.join("\n")}\n`, "utf8");
 }
 

@@ -63,6 +63,11 @@ export class MemoryCasStore implements CasStore {
     return [...this.objects.keys()].sort();
   }
 
+  async listKeys(prefix = ""): Promise<string[]> {
+    await this.tick();
+    return this.keys().filter((key) => key.startsWith(prefix));
+  }
+
   /** Overwrite bytes in place (same etag) — models bitrot / a torn object. */
   smash(key: string, body: Buffer): void {
     const cur = this.objects.get(key);

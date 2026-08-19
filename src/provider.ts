@@ -30,7 +30,7 @@ export function createProvider(
 }
 
 class S3SessionPersistenceProvider implements SessionPersistenceProvider {
-  private readonly logs = new Map<string, S3SessionLog>();
+  private readonly logs = new Map<string, Promise<S3SessionLog>>();
   private readonly client?: S3Client;
 
   constructor(
@@ -62,10 +62,11 @@ class S3SessionPersistenceProvider implements SessionPersistenceProvider {
   }
 
   async close(sessionId: string): Promise<void> {
-    const log = this.logs.get(sessionId);
-    if (!log) return;
-    await log.close();
+    const pending = this.logs.get(sessionId);
+    if (!pending) return;
     this.logs.delete(sessionId);
+    const log = await pending;
+    await log.close();
   }
 
   private storeFor(sessionId: string): CasStore {
@@ -76,14 +77,17 @@ class S3SessionPersistenceProvider implements SessionPersistenceProvider {
     return createS3CasStore(this.config, sessionId, this.client);
   }
 
-  private async ensure(sessionId: string): Promise<S3SessionLog> {
+  private ensure(sessionId: string): Promise<S3SessionLog> {
     const cached = this.logs.get(sessionId);
     if (cached) return cached;
-    const log = await S3SessionLog.open(this.storeFor(sessionId), sessionId, {
+    const pending = S3SessionLog.open(this.storeFor(sessionId), sessionId, {
       flushThresholdEvents: this.config.flushThresholdEvents,
       flushThresholdBytes: this.config.flushThresholdBytes,
+    }).catch((error: unknown) => {
+      this.logs.delete(sessionId);
+      throw error;
     });
-    this.logs.set(sessionId, log);
-    return log;
+    this.logs.set(sessionId, pending);
+    return pending;
   }
 }

@@ -5,6 +5,23 @@ export interface CasStore {
   putIfAbsent(key: string, body: Buffer): Promise<string>;
   putIfMatch(key: string, body: Buffer, etag: string): Promise<string>;
   delete(key: string): Promise<void>;
+  /** Keys relative to this store, optionally filtered by prefix. */
+  listKeys(prefix?: string): Promise<string[]>;
+}
+
+export function prefixStore(inner: CasStore, prefix: string): CasStore {
+  const p = prefix.endsWith("/") || prefix.length === 0 ? prefix : `${prefix}/`;
+  const rel = (key: string) => `${p}${key.replace(/^\/+/, "")}`;
+  return {
+    get: (key) => inner.get(rel(key)),
+    putIfAbsent: (key, body) => inner.putIfAbsent(rel(key), body),
+    putIfMatch: (key, body, etag) => inner.putIfMatch(rel(key), body, etag),
+    delete: (key) => inner.delete(rel(key)),
+    listKeys: async (sub = "") => {
+      const keys = await inner.listKeys(rel(sub));
+      return keys.map((key) => (key.startsWith(p) ? key.slice(p.length) : key));
+    },
+  };
 }
 
 export interface CasUpdateOptions {
@@ -40,14 +57,13 @@ export async function casUpdate<T>(
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const existing = await store.get(key);
-      const current = existing ? parse(existing.body) : null;
-      const next = mutate(current);
-      const body = serialize(next);
-      const etag = existing
-        ? await store.putIfMatch(key, body, existing.etag)
+      const current = await store.get(key);
+      const value = mutate(current ? parse(current.body) : null);
+      const body = serialize(value);
+      const etag = current
+        ? await store.putIfMatch(key, body, current.etag)
         : await store.putIfAbsent(key, body);
-      return { value: next, etag };
+      return { value, etag };
     } catch (error) {
       lastError = error;
       if (!(error instanceof CasConflictError)) throw error;
