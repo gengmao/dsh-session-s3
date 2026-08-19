@@ -5,6 +5,8 @@ export class MemoryCasStore implements CasStore {
   readonly objects = new Map<string, { body: Buffer; etag: string }>();
   failNextPutIfAbsent = 0;
   failNextPutIfMatch = 0;
+  /** After a successful fragment putIfAbsent, throw (models crash before CAS). */
+  crashAfterFragmentPut = false;
   private seq = 0;
   private readonly delayMs: number;
 
@@ -30,6 +32,10 @@ export class MemoryCasStore implements CasStore {
     }
     const etag = this.nextEtag();
     this.objects.set(key, { body: Buffer.from(body), etag });
+    if (this.crashAfterFragmentPut && key.startsWith("fragments/")) {
+      this.crashAfterFragmentPut = false;
+      throw new Error("simulated crash after fragment PUT, before manifest CAS");
+    }
     return etag;
   }
 
@@ -55,6 +61,13 @@ export class MemoryCasStore implements CasStore {
 
   keys(): string[] {
     return [...this.objects.keys()].sort();
+  }
+
+  /** Overwrite bytes in place (same etag) — models bitrot / a torn object. */
+  smash(key: string, body: Buffer): void {
+    const cur = this.objects.get(key);
+    if (!cur) throw new Error(`smash: missing ${key}`);
+    this.objects.set(key, { body: Buffer.from(body), etag: cur.etag });
   }
 
   private nextEtag(): string {

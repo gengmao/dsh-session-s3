@@ -6,6 +6,8 @@ wal3-Lite: **immutable JSONL fragments** + a **CAS manifest** (`If-None-Match` /
 
 Fixes the class of JSONL durability bugs that come from torn writes, missing fsync, and concurrent writers — by never mutating a fragment and coordinating writers on a single compare-and-swap object.
 
+The 7 field-confirmed DSH corruption discussions ([#1333](https://github.com/deepseek-ai/deepseek-harness/discussions/1333), [#1452](https://github.com/deepseek-ai/deepseek-harness/discussions/1452), [#1497](https://github.com/deepseek-ai/deepseek-harness/discussions/1497), [#1473](https://github.com/deepseek-ai/deepseek-harness/discussions/1473), [#1586](https://github.com/deepseek-ai/deepseek-harness/discussions/1586), [#2167](https://github.com/deepseek-ai/deepseek-harness/discussions/2167), [#2342](https://github.com/deepseek-ai/deepseek-harness/discussions/2342)) are encoded as tests in `test/corruption-scenarios.test.ts`. Results: [docs/corruption-scenarios.md](docs/corruption-scenarios.md).
+
 ## Install
 
 ```bash
