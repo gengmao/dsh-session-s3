@@ -1,7 +1,13 @@
-# Example profile overlay: swap JSONL persistence for this S3 backend.
-# Install the package, then merge this into a DSH profile (or `dsh plugin add`).
+# Bundle patch: replace the profile's `sessions` row with this S3 backend.
 #
-#   dsh plugin add "link:/path/to/dsh-session-s3"
+#   dsh plugin --profile web add github:gengmao/dsh-session-s3
+#
+# Leave accessKeyId / secretAccessKey unset so the AWS SDK default chain
+# (shared credentials, AWS_PROFILE, SSO, IAM role) can supply session tokens.
+# Static keys in this file skip AWS_SESSION_TOKEN and break SSO / assume-role.
+#
+# Override bucket / region / endpoint in the profile cordis.patch.yml, or set:
+#   DSH_S3_BUCKET, DSH_S3_PREFIX, DSH_S3_REGION, DSH_S3_ENDPOINT
 #
 # Caveat: this plugin currently exposes SessionPersistenceProvider
 # (load/append/read/compact/close), not the full upstream SessionPersistence
@@ -16,7 +22,5 @@
     region: !!js process.env.DSH_S3_REGION ?? 'auto'
     endpoint: !!js process.env.DSH_S3_ENDPOINT
     forcePathStyle: !!js process.env.DSH_S3_ENDPOINT !== undefined
-    accessKeyId: !!js process.env.AWS_ACCESS_KEY_ID
-    secretAccessKey: !!js process.env.AWS_SECRET_ACCESS_KEY
     flushThresholdEvents: 50
     flushThresholdBytes: 262144

@@ -27,11 +27,11 @@ config:
   accessKeyId:
     type: string
     required: false
-    description: Else AWS_ACCESS_KEY_ID or the default credential chain
+    description: Static key. Omit to use AWS_ACCESS_KEY_ID, then the SDK default chain (SSO / IAM role / ~/.aws/credentials). Do not set if you need AWS_SESSION_TOKEN.
   secretAccessKey:
     type: string
     required: false
-    description: Else AWS_SECRET_ACCESS_KEY or the default credential chain
+    description: Required when accessKeyId is set. Omit to use the SDK default chain.
   flushThresholdEvents:
     type: number
     default: 50
