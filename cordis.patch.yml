@@ -1,0 +1,22 @@
+# Example profile overlay: swap JSONL persistence for this S3 backend.
+# Install the package, then merge this into a DSH profile (or `dsh plugin add`).
+#
+#   dsh plugin add "link:/path/to/dsh-session-s3"
+#
+# Caveat: this plugin currently exposes SessionPersistenceProvider
+# (load/append/read/compact/close), not the full upstream SessionPersistence
+# abstract class. Reconcile before using it as a drop-in for
+# @deepseek-ai/dsh-session-persistence-jsonl.
+
+- id: sessions
+  name: dsh-session-s3
+  config:
+    bucket: !!js process.env.DSH_S3_BUCKET
+    prefix: !!js process.env.DSH_S3_PREFIX ?? 'dsh/'
+    region: !!js process.env.DSH_S3_REGION ?? 'auto'
+    endpoint: !!js process.env.DSH_S3_ENDPOINT
+    forcePathStyle: !!js process.env.DSH_S3_ENDPOINT !== undefined
+    accessKeyId: !!js process.env.AWS_ACCESS_KEY_ID
+    secretAccessKey: !!js process.env.AWS_SECRET_ACCESS_KEY
+    flushThresholdEvents: 50
+    flushThresholdBytes: 262144

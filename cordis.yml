@@ -1,0 +1,40 @@
+id: dsh-session-persistence-s3
+name: dsh-session-s3
+description: S3-backed SessionPersistence provider (wal3-Lite). Immutable JSONL fragments + CAS manifest.
+runtime: node
+entry: ./dist/index.js
+service: sessionPersistenceS3
+config:
+  bucket:
+    type: string
+    required: true
+    description: S3 bucket name
+  prefix:
+    type: string
+    default: dsh/
+    description: Key prefix. Sessions live at {prefix}sessions/{sessionId}/
+  region:
+    type: string
+    default: auto
+  endpoint:
+    type: string
+    required: false
+    description: Custom endpoint for R2 / Tigris / MinIO / SeaweedFS / GCS S3 interop
+  forcePathStyle:
+    type: boolean
+    required: false
+    description: Defaults to true when endpoint is set
+  accessKeyId:
+    type: string
+    required: false
+    description: Else AWS_ACCESS_KEY_ID or the default credential chain
+  secretAccessKey:
+    type: string
+    required: false
+    description: Else AWS_SECRET_ACCESS_KEY or the default credential chain
+  flushThresholdEvents:
+    type: number
+    default: 50
+  flushThresholdBytes:
+    type: number
+    default: 262144

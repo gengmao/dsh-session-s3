@@ -1,0 +1,75 @@
+import { CasConflictError } from "../src/errors.js";
+import type { CasStore } from "../src/cas.js";
+
+export class MemoryCasStore implements CasStore {
+  readonly objects = new Map<string, { body: Buffer; etag: string }>();
+  failNextPutIfAbsent = 0;
+  failNextPutIfMatch = 0;
+  private seq = 0;
+  private readonly delayMs: number;
+
+  constructor(opts?: { delayMs?: number }) {
+    this.delayMs = opts?.delayMs ?? 0;
+  }
+
+  async get(key: string): Promise<{ body: Buffer; etag: string } | null> {
+    await this.tick();
+    const hit = this.objects.get(key);
+    if (!hit) return null;
+    return { body: Buffer.from(hit.body), etag: hit.etag };
+  }
+
+  async putIfAbsent(key: string, body: Buffer): Promise<string> {
+    await this.tick();
+    if (this.failNextPutIfAbsent > 0) {
+      this.failNextPutIfAbsent -= 1;
+      throw new CasConflictError(`injected 412 on putIfAbsent ${key}`);
+    }
+    if (this.objects.has(key)) {
+      throw new CasConflictError(`412 If-None-Match on ${key}`);
+    }
+    const etag = this.nextEtag();
+    this.objects.set(key, { body: Buffer.from(body), etag });
+    return etag;
+  }
+
+  async putIfMatch(key: string, body: Buffer, etag: string): Promise<string> {
+    await this.tick();
+    if (this.failNextPutIfMatch > 0) {
+      this.failNextPutIfMatch -= 1;
+      throw new CasConflictError(`injected 412 on putIfMatch ${key}`);
+    }
+    const cur = this.objects.get(key);
+    if (!cur || cur.etag !== etag) {
+      throw new CasConflictError(`412 If-Match on ${key}`);
+    }
+    const next = this.nextEtag();
+    this.objects.set(key, { body: Buffer.from(body), etag: next });
+    return next;
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.tick();
+    this.objects.delete(key);
+  }
+
+  keys(): string[] {
+    return [...this.objects.keys()].sort();
+  }
+
+  private nextEtag(): string {
+    this.seq += 1;
+    return `etag-${this.seq}`;
+  }
+
+  private async tick(): Promise<void> {
+    if (this.delayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.delayMs));
+    }
+  }
+}
+
+export const fastCas = {
+  sleep: async () => undefined,
+  random: () => 0,
+};
