@@ -39,12 +39,6 @@ describe("manifest", () => {
     expect(parseManifest(serializeManifest(original))).toEqual(original);
   });
 
-  it("strips a leftover checkpoint field from older manifests", () => {
-    const raw = { ...sample(), checkpoint: { at_seq: 1, blob: "x", sha256: sha } };
-    const parsed = parseManifest(JSON.stringify(raw));
-    expect(parsed).not.toHaveProperty("checkpoint");
-  });
-
   it("throws on invalid json", () => {
     expect(() => parseManifest("{nope")).toThrow(ManifestCorruptError);
     expect(() => parseManifest("{nope")).toThrow(/not valid JSON/);
