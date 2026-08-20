@@ -279,8 +279,10 @@ export async function publishFragment(
   let known: { body: Buffer; etag: string } | null | undefined = existing;
   let seq = (last?.seq ?? 0) + 1;
   let lastError: unknown;
+  let lastKey = MANIFEST_KEY;
   for (let attempt = 0; attempt <= MAX_FRAGMENT_PUT_RETRIES; attempt++) {
     const key = fragmentKey(seq);
+    lastKey = key;
     try {
       await store.putIfAbsent(key, body);
     } catch (error) {
@@ -316,7 +318,7 @@ export async function publishFragment(
       known = await store.get(MANIFEST_KEY);
     }
   }
-  const exhausted = new CasRetryExhaustedError(MANIFEST_KEY, MAX_FRAGMENT_PUT_RETRIES + 1);
+  const exhausted = new CasRetryExhaustedError(lastKey, MAX_FRAGMENT_PUT_RETRIES + 1);
   if (lastError instanceof Error) exhausted.cause = lastError;
   throw exhausted;
 }
@@ -512,11 +514,6 @@ export class S3SessionLog {
       (sum, event) => sum + Buffer.byteLength(jsonLine(event), "utf8") + 1,
       0,
     );
-  }
-
-  private nextSeq(): number {
-    const last = this.manifest.fragments[this.manifest.fragments.length - 1];
-    return last ? last.seq + 1 : 1;
   }
 
   private async reloadManifest(): Promise<void> {

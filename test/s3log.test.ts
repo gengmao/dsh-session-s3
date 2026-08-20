@@ -207,7 +207,11 @@ describe("S3SessionLog", () => {
     const log = await openLog(store);
     store.failNextPutIfAbsent = 20;
     log.append(event(0));
-    await expect(log.flush()).rejects.toBeInstanceOf(CasRetryExhaustedError);
+    await expect(log.flush()).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(CasRetryExhaustedError);
+      expect((err as Error).message).toMatch(/fragments\/\d+\.jsonl/);
+      return true;
+    });
     expect(log.pending).toEqual([event(0)]);
   });
 
