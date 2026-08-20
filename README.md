@@ -67,7 +67,9 @@ Requires Node >= 18.
 
 Invalid config **fails loud at load**, listing every problem (not just the first).
 
-After install, set the bucket (and optional endpoint) in the **profile overlay** `$DSH_HOME/profiles/web/cordis.patch.yml`. The bundle patch already replaces the `sessions` row; override values there or in the profile layer that follows:
+The bundle patch replaces the profile `sessions` row and the default export is a Cordis `Service` registered as **`ctx.sessionPersistence`**, so Harness resume/list/the agent loop talk to S3 instead of JSONL.
+
+After install, set the bucket (and optional endpoint) in the **profile overlay** `$DSH_HOME/profiles/web/cordis.patch.yml`:
 
 ```yaml
 - id: sessions
@@ -79,18 +81,9 @@ After install, set the bucket (and optional endpoint) in the **profile overlay**
     # endpoint: https://<account>.r2.cloudflarestorage.com   # R2 / MinIO / Tigris
 ```
 
-Or via env, which `cordis.patch.yml` in this repo reads:
-
-| Env | Maps to |
-| --- | --- |
-| `DSH_S3_BUCKET` | `bucket` (required) |
-| `DSH_S3_PREFIX` | `prefix` (default `dsh/`) |
-| `DSH_S3_REGION` | `region` (default `auto`) |
-| `DSH_S3_ENDPOINT` | `endpoint` (also turns on path-style) |
-
 Do **not** put access keys in the patch. See [AWS credentials](#aws-credentials).
 
-Programmatic use (no DSH):
+Library helper (no DSH, not the seam):
 
 ```ts
 import { createProvider } from "dsh-session-s3";
@@ -220,17 +213,15 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 
 ## Caveats
 
-1. **DSH seam.** `SessionPersistenceProvider` here is `load` / `append` / `read` / `compact` / `close`. Upstream `SessionPersistence` (`@deepseek-ai/dsh-session-persistence`) is a Cordis `Service` with `locate` / `create` / `prepare` / `inspect` / `readFrom` / `list` / `listSnapshots`. Reconcile against the real interface before using this as a drop-in for `dsh-session-persistence-jsonl`.
+1. **Duck-typed seam.** This plugin registers as Cordis `ctx.sessionPersistence` (`locate` / `create` / `append` / `load` / `inspect` / `readFrom` / `list` / `listSnapshots` / `prepare`) and listens for `session/created`, `session/event`, `session/flush`, `session/disposed`. It does **not** subclass `@deepseek-ai/dsh-session-persistence`'s abstract `SessionPersistence` (that package is not independently installable) or wrap `PersistenceCoordinator`, so `instanceof SessionPersistence` is false and DSH's synthetic interrupted-turn closers are not emitted on cold `load`. Appends whose first `seq` ≠ stored next-seq **reject**.
 2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
-3. **Payload `seq`.** This plugin stores opaque events. Colliding coordinator-assigned `SessionEvent.seq` values remain detectable but not fatal (see [docs/corruption-scenarios.md](docs/corruption-scenarios.md)).
-4. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256; a lost response after a *fragment* PUT (orphan) is skipped. A lost response after CAS still cannot invent a new seq for the same bytes.
-5. **`read()` includes the in-memory buffer** (not yet durable). `compact()` / `close()` flush first. Call `close` (or wait for a threshold flush) before treating `read()` as durable.
-6. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError` — indistinguishable from bitrot. Phase 1 assumes one writer and no trim-during-read.
-7. **Single-writer per session.** Two `S3SessionLog` instances on the same session id coordinate via CAS, but `trim` and `checkpoint` are not designed for concurrent readers.
+3. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256; a lost response after a *fragment* PUT (orphan) is skipped.
+4. **Library `createProvider()`** is the old 5-method helper (`load`/`append`/`read`/`compact`/`close`). DSH uses `S3SessionPersistence` (the default export).
+5. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 
 ## Roadmap
 
-- Wire the real upstream `SessionPersistence` seam + reject appends whose first seq ≠ stored next-seq
+- Wrap DSH `PersistenceCoordinator` once `@deepseek-ai/dsh-session-persistence` is independently installable (synthetic closers, write-behind, live-writer refusal)
 - Phase 2 — setsum / global log verification, verified GC
 - Optional — binary fragments, DynamoDB Streams notifications
 

@@ -12,11 +12,7 @@
 #   profile slot id  = sessions          (replaces dsh-session-persistence-jsonl)
 #   plugin package   = dsh-session-s3
 #   cordis.yml id    = dsh-session-persistence-s3
-#
-# Caveat: this plugin currently exposes SessionPersistenceProvider
-# (load/append/read/compact/close), not the full upstream SessionPersistence
-# abstract class. Reconcile before using it as a drop-in for
-# @deepseek-ai/dsh-session-persistence-jsonl.
+#   Cordis service   = sessionPersistence  (ctx.sessionPersistence)
 
 - id: sessions
   name: dsh-session-s3

@@ -50,26 +50,31 @@ export {
   type SessionEvent,
   type SessionPersistenceProvider,
 } from "./provider.js";
+export {
+  S3PersistenceBackend,
+  type PersistEvent,
+  type PersistHeader,
+  type S3TornMarker,
+  type SessionLocation,
+  type SessionSnapshot,
+  type StoredPrefix,
+} from "./backend.js";
+export {
+  S3SessionPersistence,
+  S3SessionRuntime,
+  type SessionInspection,
+} from "./persistence.js";
 
-import { createProvider, type SessionPersistenceProvider } from "./provider.js";
+import { S3SessionPersistence } from "./persistence.js";
 import type { PluginConfig } from "./config.js";
-
-export interface CordisLikeContext {
-  [key: string]: unknown;
-}
+import type { Context } from "@deepseek-ai/cordis";
 
 /**
- * Cordis / DSH plugin entry. Validates config loudly and exposes the
- * SessionPersistence provider on the context as `sessionPersistenceS3`.
- *
- * The exact upstream `SessionPersistence` abstract class (locate/create/
- * prepare/inspect/list) is NOT wired here — see README. Reconcile against
- * `@deepseek-ai/dsh-session-persistence` before swapping this in for jsonl.
+ * Cordis function-plugin entry. Prefer the default class export: Cordis
+ * instantiates it as `ctx.sessionPersistence`.
  */
-export function apply(ctx: CordisLikeContext, config: PluginConfig): SessionPersistenceProvider {
-  const provider = createProvider(config);
-  ctx.sessionPersistenceS3 = provider;
-  return provider;
+export function apply(ctx: Context, config: PluginConfig): S3SessionPersistence {
+  return new S3SessionPersistence(ctx, config);
 }
 
-export default apply;
+export default S3SessionPersistence;

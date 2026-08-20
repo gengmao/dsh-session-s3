@@ -1,9 +1,9 @@
 id: dsh-session-persistence-s3
 name: dsh-session-s3
-description: S3-backed SessionPersistence provider (wal3-Lite). Immutable JSONL fragments + CAS manifest.
+description: S3-backed SessionPersistence (wal3-Lite). Registers as ctx.sessionPersistence.
 runtime: node
 entry: ./dist/index.js
-service: sessionPersistenceS3
+service: sessionPersistence
 config:
   bucket:
     type: string
