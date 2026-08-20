@@ -256,6 +256,33 @@ immediately dead would reintroduce a delete-versus-publish race.
 - **Cost of history:** without compaction or verified GC, immutable objects
   trade additional storage and requests for a smaller corruption blast radius.
 
+## S3 as the persistence layer
+
+By 2026 S3 is the default durability layer for a lot of data infrastructure
+(Continuity's Git WAL, lakehouses, Kafka-compatible logs). wal3-Lite is that
+pattern applied to DSH sessions: immutable fragments are the WAL objects; the
+manifest is the CAS index. The in-memory buffer is a cache, not part of the
+durability model — a process crash loses unflushed events. See
+[Twenty Years of S3](https://blog.fnil.net/s3-at-twenty/).
+
+Three operational notes from that generation of S3:
+
+1. **Enforce CAS at the bucket.** Conditional headers can be ignored by a
+   misconfigured store. On AWS, a bucket policy can deny `s3:PutObject`
+   unless `If-Match` or `If-None-Match` is present, so a silent 200 cannot
+   bypass the commit. The plugin already retries 412 and 409
+   `ConditionalRequestConflict`; the policy makes bypass a permission error
+   instead of silent data loss.
+2. **Latency is a storage-class choice.** S3 Express One Zone offers
+   single-digit-ms PUTs in one AZ with the same `If-Match` API. Point
+   `endpoint` / `region` at a directory bucket if session flush latency
+   matters; keep multi-AZ Standard if the session must survive an AZ.
+3. **Request charges dominate small objects.** An uncontended flush is three
+   billed requests plus the bytes of a full manifest rewrite. Batching exists
+   because request cost and round trips dwarf JSONL's one append. S3
+   Annotations (2026) could one day mutate catalog metadata without rewriting
+   the object; Phase 1 keeps the manifest as a single CAS snapshot.
+
 ## Alternatives not used in Phase 1
 
 | Alternative | Why it is not the Phase 1 mechanism |

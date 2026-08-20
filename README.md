@@ -169,6 +169,30 @@ Attach an instance or task role. Do not set keys. The SDK picks up the role.
 
 `If-Match` / `If-None-Match` are request headers, not extra IAM actions. `list()` / `listSnapshots()` call `ListObjectsV2` and need `s3:ListBucket`.
 
+On AWS, optionally **require** those headers so a client that forgets CAS cannot PUT:
+
+```json
+{
+  "Sid": "DenyNonConditionalPuts",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": "s3:PutObject",
+  "Resource": "arn:aws:s3:::my-sessions/dsh/*",
+  "Condition": {
+    "Null": {
+      "s3:if-match": "true",
+      "s3:if-none-match": "true"
+    }
+  }
+}
+```
+
+Add that statement to the bucket policy. It denies a PUT only when *both* headers are absent.
+
+### Latency (S3 Express One Zone)
+
+Same plugin, same CAS. Directory buckets and Express One Zone cut PUT latency to single-digit ms in one AZ. Set `endpoint` / `region` to the directory bucket; keep S3 Standard if the session must survive an AZ. Request charges still dominate small objects — coordinator batching exists for that.
+
 ### R2 / MinIO / Tigris
 
 Same keys, plus `endpoint`. Path-style is on automatically when `endpoint` is set:
