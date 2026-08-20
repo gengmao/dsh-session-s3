@@ -225,10 +225,11 @@ guarantees and remaining races.
 
 CAS is the correctness mechanism. Do not point this at a store that silently ignores conditional puts.
 
-Env-gated integration test:
+Env-gated integration test (and the CI `MinIO integration` job):
 
 ```bash
 S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
+  S3_REGION=us-east-1 \
   AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
   npm test
 ```
@@ -254,5 +255,7 @@ npm install
 npm test
 npm run build
 ```
+
+CI (`.github/workflows/ci.yml`) typechecks, runs the unit suite, then repeats the suite against MinIO with `S3_IT=1`.
 
 `SPEC.md` is the Phase 1 contract.

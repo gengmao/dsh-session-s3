@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  unit:
+    name: typecheck + unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  integration:
+    name: MinIO integration
+    runs-on: ubuntu-latest
+    env:
+      S3_IT: "1"
+      S3_BUCKET: test
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data --console-address :9001
+      - name: Wait for MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "$S3_ENDPOINT/minio/health/live" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO did not become ready" >&2
+          docker logs minio || true
+          exit 1
+      - name: Create bucket
+        run: |
+          node --input-type=module <<'EOF'
+          import { S3Client, CreateBucketCommand } from "@aws-sdk/client-s3";
+          const client = new S3Client({
+            region: process.env.S3_REGION,
+            endpoint: process.env.S3_ENDPOINT,
+            forcePathStyle: true,
+            credentials: {
+              accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+              secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            },
+          });
+          try {
+            await client.send(new CreateBucketCommand({ Bucket: process.env.S3_BUCKET }));
+          } catch (error) {
+            const name = error instanceof Error ? error.name : "";
+            const status = error && error.$metadata ? error.$metadata.httpStatusCode : undefined;
+            if (name !== "BucketAlreadyOwnedByYou" && name !== "BucketAlreadyExists" && status !== 409) {
+              throw error;
+            }
+          }
+          EOF
+      - run: npm test

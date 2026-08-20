@@ -33,6 +33,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:it": "S3_IT=1 vitest run",
     "prepare": "tsc -p tsconfig.json"
   },
   "keywords": [
