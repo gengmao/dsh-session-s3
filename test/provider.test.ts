@@ -47,7 +47,7 @@ describe("createProvider / config", () => {
     expect(() => createProvider({ bucket: "b", accessKeyId: "ak" })).toThrow(/secretAccessKey/);
   });
 
-  it("defaults prefix, region, flush thresholds, and path-style-when-endpoint", () => {
+  it("defaults prefix, region auto when endpoint is set, flush thresholds, and path-style", () => {
     const resolved = parseConfig({ bucket: "b", endpoint: "http://127.0.0.1:9000" });
     expect(resolved.prefix).toBe("dsh/");
     expect(resolved.region).toBe("auto");
@@ -60,15 +60,20 @@ describe("createProvider / config", () => {
     expect(parseConfig({ bucket: "b" }).forcePathStyle).toBe(false);
   });
 
-  it("falls back to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY", () => {
+  it("leaves region unset on AWS so the SDK can use AWS_REGION", () => {
+    expect(parseConfig({ bucket: "b" }).region).toBeUndefined();
+    expect(parseConfig({ bucket: "b", region: "us-west-2" }).region).toBe("us-west-2");
+  });
+
+  it("does not copy AWS_ACCESS_KEY_ID into static credentials", () => {
     const prevId = process.env.AWS_ACCESS_KEY_ID;
     const prevSecret = process.env.AWS_SECRET_ACCESS_KEY;
     process.env.AWS_ACCESS_KEY_ID = "env-ak";
     process.env.AWS_SECRET_ACCESS_KEY = "env-sk";
     try {
       const resolved = parseConfig({ bucket: "b" });
-      expect(resolved.accessKeyId).toBe("env-ak");
-      expect(resolved.secretAccessKey).toBe("env-sk");
+      expect(resolved.accessKeyId).toBeUndefined();
+      expect(resolved.secretAccessKey).toBeUndefined();
     } finally {
       if (prevId === undefined) delete process.env.AWS_ACCESS_KEY_ID;
       else process.env.AWS_ACCESS_KEY_ID = prevId;

@@ -100,7 +100,7 @@ interface CasStore {
 }
 ```
 
-`casUpdate`: get → mutate → putIfMatch / putIfAbsent; on 412 re-read and retry; after maxRetries throw `CasRetryExhaustedError`.
+`casUpdate`: get → mutate → putIfMatch / putIfAbsent; on 412 / 409 `ConditionalRequestConflict` re-read and retry; after maxRetries throw `CasRetryExhaustedError`.
 
 ETags on the wire are **quoted** (`If-Match: "abc"`). `quoteEtag` is idempotent.
 
@@ -108,7 +108,7 @@ ETags on the wire are **quoted** (`If-Match: "abc"`). `quoteEtag` is idempotent.
 
 - GET 404 / NoSuchKey → `null`.
 - PUT `If-None-Match: *` / `If-Match: <quoted etag>`.
-- 412 → `CasConflictError`; other failures → `S3AccessError`.
+- 412 / 409 `ConditionalRequestConflict` → `CasConflictError`; other failures → `S3AccessError`.
 - A successful PUT without an ETag is an error (never fabricate a sha256 etag).
 
 ## 8. Core engine (s3log.ts `S3SessionLog`)
@@ -153,10 +153,10 @@ Library helper `createProvider` (`provider.ts`) is **not** the DSH seam: `load` 
 interface PluginConfig {
   bucket: string;                    // required
   prefix?: string;                   // default "dsh/"
-  region?: string;                   // default "auto"
+  region?: string;                   // unset → SDK / AWS_REGION; default "auto" if endpoint set
   endpoint?: string;                 // must be http(s) URL if set
   forcePathStyle?: boolean;          // default true when endpoint set
-  accessKeyId?: string;              // else AWS_ACCESS_KEY_ID / SDK chain
+  accessKeyId?: string;              // static keys only; else SDK default chain (includes AWS_SESSION_TOKEN)
   secretAccessKey?: string;
   flushThresholdEvents?: number;     // createProvider only; default 50
   flushThresholdBytes?: number;      // createProvider only; default 262144
@@ -174,7 +174,7 @@ not reserve event sequence numbers across processes.
 ## 11. Tests (vitest, in-memory `MemoryCasStore` unless noted)
 
 - fragment, manifest, cas, s3log (including concurrent-append-during-flush, two-orphan seq, `trim(0)`, stale fragment ordinal reallocated above the tail).
-- s3cas: stubbed `S3Client` for 404 / 412 / 500 / quoted `If-Match`.
+- s3cas: stubbed `S3Client` for 404 / 412 / 409 `ConditionalRequestConflict` / 500 / quoted `If-Match`.
 - provider: library helper.
 - backend: PersistenceBackend hooks, list isolation, torn tail, **stale-writer fail-closed inside CAS**, lost-response after committed CAS, **commitRepair refuses to drop a newer tail**.
 - persistence: `instanceof SessionPersistence`, coordinator create/append/load/seq-mismatch, interrupted-turn closer on cold load, torn-tail inspect vs load.

@@ -63,7 +63,7 @@ Peer packages (`@deepseek-ai/dsh-session`, `dsh-session-persistence`) come from 
 | --- | --- | --- |
 | `bucket` | *(required)* | S3 bucket |
 | `prefix` | `dsh/` | Keys live at `{prefix}sessions/{sessionId}/` |
-| `region` | `auto` | AWS region, or `auto` for R2 |
+| `region` | unset (SDK / `AWS_REGION`); `auto` if `endpoint` is set | Set explicitly for AWS; `auto` for R2 |
 | `endpoint` | — | R2 / Tigris / MinIO / SeaweedFS / GCS interop (must be `http(s)`) |
 | `forcePathStyle` | `true` when `endpoint` is set | Path-style URLs |
 | `accessKeyId` / `secretAccessKey` | unset | Only for static keys. Prefer the SDK default chain (see below) |
@@ -110,11 +110,10 @@ await persistence.close("sess-1");
 
 Resolution order (`parseConfig` → `createS3Client`):
 
-1. Plugin config `accessKeyId` **and** `secretAccessKey` (both required if either is set)
-2. Else `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` at load time
-3. Else **omit keys** and use the AWS SDK default chain (`~/.aws/credentials`, `AWS_PROFILE`, SSO, IAM instance/task role)
+1. Plugin config `accessKeyId` **and** `secretAccessKey` (both required if either is set) — static keys, no session token
+2. Else **omit keys** and use the AWS SDK default chain (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_SESSION_TOKEN`, `~/.aws/credentials`, `AWS_PROFILE`, SSO, IAM instance/task role)
 
-**Prefer (3) on real AWS.** Passing static keys skips `AWS_SESSION_TOKEN`, so SSO and assumed-role creds fail. Leave `accessKeyId` / `secretAccessKey` unset in the Cordis patch.
+**Prefer (2) on real AWS.** `parseConfig` does not copy env keys into static credentials — that would drop `AWS_SESSION_TOKEN` and break SSO / assumed roles / GitHub OIDC. Leave `accessKeyId` / `secretAccessKey` unset in the Cordis patch.
 
 ### Local / laptop
 

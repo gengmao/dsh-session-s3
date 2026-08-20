@@ -22,7 +22,7 @@ export type PluginConfig = z.infer<typeof pluginConfigSchema>;
 export interface ResolvedPluginConfig {
   bucket: string;
   prefix: string;
-  region: string;
+  region?: string;
   endpoint?: string;
   forcePathStyle: boolean;
   accessKeyId?: string;
@@ -78,11 +78,11 @@ export function parseConfig(input: unknown): ResolvedPluginConfig {
   return {
     bucket: cfg.bucket,
     prefix: normalizePrefix(cfg.prefix ?? DEFAULT_PREFIX),
-    region: cfg.region ?? DEFAULT_REGION,
+    region: cfg.region ?? (endpoint ? DEFAULT_REGION : undefined),
     endpoint,
     forcePathStyle,
-    accessKeyId: cfg.accessKeyId ?? process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: cfg.secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY,
+    accessKeyId: cfg.accessKeyId,
+    secretAccessKey: cfg.secretAccessKey,
     flushThresholdEvents: cfg.flushThresholdEvents ?? DEFAULT_FLUSH_EVENTS,
     flushThresholdBytes: cfg.flushThresholdBytes ?? DEFAULT_FLUSH_BYTES,
     preparedSessionCacheSize: cfg.preparedSessionCacheSize,

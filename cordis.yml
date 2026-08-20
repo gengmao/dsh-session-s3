@@ -15,7 +15,8 @@ config:
     description: Key prefix. Sessions live at {prefix}sessions/{sessionId}/
   region:
     type: string
-    default: auto
+    required: false
+    description: AWS region. Omit to use AWS_REGION / the SDK default chain. Use auto for R2.
   endpoint:
     type: string
     required: false
@@ -27,7 +28,7 @@ config:
   accessKeyId:
     type: string
     required: false
-    description: Static key. Omit to use AWS_ACCESS_KEY_ID, then the SDK default chain (SSO / IAM role / ~/.aws/credentials). Do not set if you need AWS_SESSION_TOKEN.
+    description: Static keys only. Omit to use the SDK default chain (env including AWS_SESSION_TOKEN, SSO, IAM role, ~/.aws/credentials).
   secretAccessKey:
     type: string
     required: false

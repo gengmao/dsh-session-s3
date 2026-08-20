@@ -58,6 +58,15 @@ describe("quoteEtag / error classifiers", () => {
     expect(isPreconditionFailed(new FakeError("Error", 412))).toBe(true);
     expect(isPreconditionFailed(new FakeError("Error", 500))).toBe(false);
   });
+
+  it("classifies 409 ConditionalRequestConflict as a CAS conflict", () => {
+    expect(
+      isPreconditionFailed(new FakeError("ConditionalRequestConflict", 409, "ConditionalRequestConflict")),
+    ).toBe(true);
+    expect(isPreconditionFailed(new FakeError("BucketAlreadyOwnedByYou", 409, "BucketAlreadyOwnedByYou"))).toBe(
+      false,
+    );
+  });
 });
 
 describe("S3CasStore", () => {
@@ -124,6 +133,17 @@ describe("S3CasStore", () => {
     await expect(store.putIfMatch("k", Buffer.from("x"), '"e"')).rejects.toBeInstanceOf(
       CasConflictError,
     );
+  });
+
+  it("PUT 409 ConditionalRequestConflict becomes CasConflictError", async () => {
+    const store = new S3CasStore(
+      fakeClient(async () => {
+        throw new FakeError("ConditionalRequestConflict", 409, "ConditionalRequestConflict");
+      }),
+      "bucket",
+      "p/",
+    );
+    await expect(store.putIfMatch("k", Buffer.from("x"), '"e"')).rejects.toBeInstanceOf(CasConflictError);
   });
 
   it("PUT 500 becomes S3AccessError", async () => {

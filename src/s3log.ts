@@ -86,6 +86,9 @@ export function isPreconditionFailed(error: unknown): boolean {
   const status = statusOf(error);
   const name = nameOf(error);
   const code = codeOf(error);
+  if (code === "ConditionalRequestConflict" || name === "ConditionalRequestConflict") {
+    return true;
+  }
   return status === 412 || name === "PreconditionFailed" || name === "412" || code === "PreconditionFailed";
 }
 
@@ -191,7 +194,7 @@ export class S3CasStore implements CasStore {
       }
       return etag;
     } catch (error) {
-      if (isPreconditionFailed(error)) throw new CasConflictError(`412 on ${objectKey}`);
+      if (isPreconditionFailed(error)) throw new CasConflictError(`conditional PUT failed on ${objectKey}`);
       wrapS3(error, "PUT", objectKey);
     }
   }
@@ -199,9 +202,9 @@ export class S3CasStore implements CasStore {
 
 export function createS3Client(config: ResolvedPluginConfig): S3Client {
   const clientConfig: S3ClientConfig = {
-    region: config.region,
     forcePathStyle: config.forcePathStyle,
   };
+  if (config.region) clientConfig.region = config.region;
   if (config.endpoint) clientConfig.endpoint = config.endpoint;
   if (config.accessKeyId && config.secretAccessKey) {
     clientConfig.credentials = {
