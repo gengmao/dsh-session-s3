@@ -6,6 +6,7 @@ export {
   ManifestCorruptError,
   S3AccessError,
   S3LogError,
+  StaleWriterError,
 } from "./errors.js";
 export {
   parseConfig,

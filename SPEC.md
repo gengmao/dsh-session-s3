@@ -86,6 +86,7 @@ S3LogError (base, extends Error, has .code)
 ├── ManifestCorruptError   # manifest.json unparsable / schema-invalid / session_id mismatch
 ├── FragmentCorruptError   # fragment unparsable or sha256 mismatch
 ├── CasRetryExhaustedError # CAS or fragment PUT failed after maxRetries (default 10)
+├── StaleWriterError       # DSH backend: SessionEvent.seq ≠ committed total_events inside manifest CAS
 └── S3AccessError          # 403/404/network, wraps original, .statusCode
 ```
 
@@ -146,7 +147,7 @@ Default export is this class. Cordis registers it as `ctx.sessionPersistence`.
 
 Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker.dropFromSeq`); `list()` reads manifests only so one smashed fragment cannot poison workspace boot.
 
-`appendBatch` (and the coordinator in front of it) **rejects** a batch whose first `seq` ≠ stored next-seq.
+DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === manifest.total_events` **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq` and will still store both batches.
 
 Library helper `createProvider` (`provider.ts`) is **not** the DSH seam: `load` / `append` / `read` / `compact` / `close` over `S3SessionLog`.
 
@@ -179,7 +180,7 @@ not reserve event sequence numbers across processes.
 - fragment, manifest, cas, s3log (including concurrent-append-during-flush, two-orphan seq, `trim(0)`).
 - s3cas: stubbed `S3Client` for 404 / 412 / 500 / quoted `If-Match`.
 - provider: library helper.
-- backend: PersistenceBackend hooks, list isolation, torn tail.
+- backend: PersistenceBackend hooks, list isolation, torn tail, **stale-writer fail-closed inside CAS**, lost-response idempotent.
 - persistence: `instanceof SessionPersistence`, coordinator create/append/load/seq-mismatch, interrupted-turn closer on cold load, torn-tail inspect vs load.
 - corruption-scenarios: the 7 DSH JSONL discussions.
 - Integration (`S3_IT=1`): two-writer CAS + prefix cleanup. Skipped by default.

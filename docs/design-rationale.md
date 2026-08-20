@@ -20,7 +20,10 @@ Phase 1 is designed to:
 
 It does not promise exactly-once event semantics across processes, a
 cryptographic commitment over the whole log, safe deletion under arbitrary
-concurrent readers, or automatic orphan collection.
+concurrent readers, or automatic orphan collection. DSH's supported topology
+is **one live owner per session**. The plugin documents that assumption and
+fail-closes a stale writer at the manifest CAS; it does not add leases,
+heartbeats, fencing epochs, or multi-writer merge.
 
 ## Two layers share one storage protocol
 
@@ -156,19 +159,27 @@ There are three related counters with different meanings:
 Manifest CAS totally orders fragment references. It does not rewrite or
 reserve `SessionEvent.seq` values inside those fragments.
 
-`S3PersistenceBackend.appendBatch` checks that a batch starts at the stored
-`total_events` and is internally contiguous. That rejects a stale append when
-the newer manifest is already visible. It cannot prevent this race:
+DSH assumes one cross-process writer for a `SessionId`. The coordinator
+enforces one owner only inside a single process. The S3 plugin therefore
+does **not** merge two writers. `S3PersistenceBackend.appendBatch` re-reads
+`total_events` **inside** the manifest CAS mutate:
 
-1. Two processes read the same `total_events`.
-2. Both construct batches starting at that event sequence.
-3. CAS publishes both as different fragments.
+1. If the committed tail already has this batch's SHA-256, treat it as a lost
+   CAS response and succeed (idempotent).
+2. If `events[0].seq !== total_events`, throw `StaleWriterError`. The fragment
+   already PUT is an unreachable orphan.
+3. Otherwise append the fragment reference.
 
-No bytes are overwritten, but the payload can contain duplicate or rewound
-event sequences. Preventing that requires a cross-process lease, fencing token,
-or sequence reservation above the Phase 1 CAS log. The corruption-scenario
-tests intentionally distinguish "storage remains readable" from "DSH event
-history is semantically valid."
+That is fail-closed stale-writer detection. The race that used to publish
+both batches as distinct fragments with colliding payload seqs now commits
+exactly one. Preventing two processes from *attempting* the write still
+belongs to DSH (one live owner). CAS is the defensive check for when that
+assumption is violated, not a lease protocol.
+
+The library helper (`S3SessionLog`) still stores opaque JSON and will accept
+both batches; it is not the DSH seam. Corruption-scenario tests against the
+WAL distinguish "storage remains readable" from the backend's fail-closed
+path.
 
 ## Read and integrity policy
 

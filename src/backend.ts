@@ -9,7 +9,7 @@ import {
 } from "@deepseek-ai/dsh-session-persistence";
 import { casUpdate, prefixStore, type CasStore, type CasUpdateOptions } from "./cas.js";
 import { sessionKeyPrefix, type ResolvedPluginConfig } from "./config.js";
-import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, S3LogError } from "./errors.js";
+import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, S3LogError, StaleWriterError } from "./errors.js";
 import { fragmentKey, parseFragment, serializeFragment, sha256Hex } from "./fragment.js";
 import {
   emptyManifest,
@@ -166,15 +166,9 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
     const store = this.storeFor(id);
     const existing = await store.get(MANIFEST_KEY);
     const manifest = existing ? parseManifestBuffer(existing.body) : emptyManifest(id);
-    const expected = manifest.total_events;
-    if (events[0]!.seq !== expected) {
-      throw new Error(`append seq mismatch for "${id}": expected ${expected}, got ${events[0]!.seq}`);
-    }
     for (let i = 1; i < events.length; i++) {
-      if (events[i]!.seq !== expected + i) {
-        throw new Error(
-          `append seq mismatch for "${id}": expected ${expected + i} at index ${i}, got ${events[i]!.seq}`,
-        );
+      if (events[i]!.seq !== events[0]!.seq + i) {
+        throw new StaleWriterError(id, events[0]!.seq + i, events[i]!.seq);
       }
     }
 
@@ -214,9 +208,16 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
       MANIFEST_KEY,
       (current) => {
         const base = current ?? emptyManifest(id);
-        if (base.fragments.some((f) => f.seq === ref.seq)) return base;
         const last = base.fragments[base.fragments.length - 1];
+        // Lost CAS response: this batch is already the committed tail, or our
+        // fragment seq is already published. Do not treat as a stale writer.
         if (last && last.sha256 === ref.sha256 && last.events === ref.events) return base;
+        if (base.fragments.some((f) => f.seq === ref.seq && f.sha256 === ref.sha256)) return base;
+        const expected = base.total_events;
+        const got = events[0]!.seq;
+        if (got !== expected) {
+          throw new StaleWriterError(id, expected, got);
+        }
         return {
           ...base,
           header: (base.header as Manifest["header"]) ?? (structuredClone(meta) as unknown as Manifest["header"]),

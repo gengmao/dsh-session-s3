@@ -53,3 +53,24 @@ export class S3AccessError extends S3LogError {
     this.statusCode = statusCode;
   }
 }
+
+/**
+ * A writer observed a newer committed prefix inside the manifest CAS.
+ * DSH is single-writer-per-session; this is fail-closed, not a merge.
+ * The fragment already PUT is an unreachable orphan.
+ */
+export class StaleWriterError extends S3LogError {
+  readonly sessionId: string;
+  readonly expected: number;
+  readonly got: number;
+
+  constructor(sessionId: string, expected: number, got: number) {
+    super(
+      `stale writer for "${sessionId}": expected SessionEvent.seq ${expected}, got ${got}`,
+      "STALE_WRITER",
+    );
+    this.sessionId = sessionId;
+    this.expected = expected;
+    this.got = got;
+  }
+}

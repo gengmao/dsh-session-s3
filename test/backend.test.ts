@@ -3,6 +3,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
 import { parseConfig } from "../src/config.js";
 import { S3PersistenceBackend } from "../src/backend.js";
+import { StaleWriterError } from "../src/errors.js";
 import { serializeFragment } from "../src/fragment.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
@@ -41,11 +42,47 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
   });
 
   it("rejects a batch whose first seq is not the stored next-seq", async () => {
+    const { store, backend: b } = backend();
+    await b.appendBatch(header(), [ev(0)], false);
+    await expect(b.appendBatch(header(), [ev(2)], true)).rejects.toBeInstanceOf(StaleWriterError);
+    const stored = await b.loadStored(SessionId("sess-1"));
+    expect(stored?.events).toEqual([ev(0)]);
+    const orphans = store.keys().filter((k) => k.includes("/fragments/") && k.endsWith(".jsonl"));
+    expect(orphans.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("fail-closes a stale writer inside manifest CAS; winner's prefix is the log", async () => {
+    const store = new MemoryCasStore({ delayMs: 5 });
+    const a = S3PersistenceBackend.fromMemory(
+      parseConfig({ bucket: "test-bucket", prefix: "dsh/" }),
+      store,
+      fastCas,
+    );
+    const b = S3PersistenceBackend.fromMemory(
+      parseConfig({ bucket: "test-bucket", prefix: "dsh/" }),
+      store,
+      fastCas,
+    );
+    const results = await Promise.allSettled([
+      a.appendBatch(header(), [{ ...ev(0), data: { turn: 1 } }], false),
+      b.appendBatch(header(), [{ ...ev(0), data: { turn: 99 } }], false),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleWriterError);
+    const stored = await a.loadStored(SessionId("sess-1"));
+    expect(stored?.events).toHaveLength(1);
+    expect(stored?.events[0]?.seq).toBe(0);
+  });
+
+  it("treats a lost CAS response as idempotent, not as a stale writer", async () => {
     const { backend: b } = backend();
     await b.appendBatch(header(), [ev(0)], false);
-    await expect(b.appendBatch(header(), [ev(2)], true)).rejects.toThrow(
-      /append seq mismatch.*expected 1, got 2/,
-    );
+    await b.appendBatch(header(), [ev(0)], false);
+    const stored = await b.loadStored(SessionId("sess-1"));
+    expect(stored?.events).toEqual([ev(0)]);
   });
 
   it("locate returns an s3 URI without touching storage", () => {

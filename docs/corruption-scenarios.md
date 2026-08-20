@@ -32,13 +32,21 @@ only compare-and-swap point.
 whose first event `seq` ≠ stored next-seq, and cold `load` emits synthetic
 interrupted-turn closers. `instanceof SessionPersistence` is true.
 
+On the DSH path, `appendBatch` also revalidates `SessionEvent.seq` **inside**
+the manifest CAS. A second process that writes the same `SessionId` is
+**fail-closed** (`StaleWriterError`); its fragment is an orphan. DSH's
+supported topology is one live owner per session — this is a defensive check,
+not a lease. The table above is the library WAL (`S3SessionLog`), which still
+stores both batches so the immutable-fragment property can be tested without
+DSH seq rules.
+
 ## What this plugin does not fix
 
 Two **processes** can still each hold a coordinator with a stale in-memory
-cursor (the same class of bug as JSONL [#2167](https://github.com/deepseek-ai/deepseek-harness/discussions/2167)
-without a cross-process lock). wal3-Lite will store both as distinct fragments;
-the payload seqs may collide. Cross-process CAS on the manifest prevents
-silent overwrite of bytes, not colliding coordinator-assigned seqs.
+cursor (the same class of bug as JSONL [#2167](https://github.com/deepseek-ai/deepseek-harness/discussions/2167)).
+The DSH backend will commit the first CAS winner and reject the other; it
+will not merge them. It does not add a cross-process lock, lease, or
+heartbeat. Coordinators should not both be live for one `SessionId`.
 
 The distinction between storage ordering and DSH event ordering is detailed in
 [Design rationale](design-rationale.md#storage-sequence-is-not-event-sequence).

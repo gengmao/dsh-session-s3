@@ -237,10 +237,11 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 ## Caveats
 
 1. **Same composition as JSONL.** `S3SessionPersistence` extends `@deepseek-ai/dsh-session-persistence`'s `SessionPersistence` and implements `PersistenceBackend`, then constructs `PersistenceCoordinator(ctx, this)`. Cold `load` therefore emits synthetic interrupted-turn closers; `instanceof SessionPersistence` is true. Peer deps (`cordis`, `dsh-session`, `dsh-session-persistence`) are provided by the DSH profile at install time.
-2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
-3. **Response ambiguity is bounded, not exactly-once.** A fragment PUT can leave an orphan, and the library helper recognizes a lost manifest response by matching the tail SHA-256 and event count. That also means intentionally identical consecutive library batches may collapse. DSH cross-process event semantics still require coordination above this log.
-4. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. DSH uses the default class export. **`read()` includes the in-memory buffer** (not yet on S3). `compact` / `close` flush first.
-5. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
+2. **One live writer per session.** DSH does not support two processes concurrently writing the same `SessionId`. Manifest CAS is a **defensive** check: `appendBatch` revalidates `SessionEvent.seq` inside the CAS mutate and throws `StaleWriterError` instead of committing both batches. The loser's fragment PUT is an unreachable orphan. No leases, heartbeats, or fencing.
+3. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
+4. **Response ambiguity is bounded, not exactly-once.** A fragment PUT can leave an orphan. A lost manifest response is recognized by matching the tail SHA-256 (library helper and DSH backend). Intentionally identical consecutive library batches may collapse.
+5. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. It does **not** interpret `SessionEvent.seq` and will store both batches. DSH uses the default class export. **`read()` includes the in-memory buffer** (not yet on S3). `compact` / `close` flush first.
+6. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 
 ## Roadmap
 
