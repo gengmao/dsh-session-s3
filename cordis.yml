@@ -38,3 +38,11 @@ config:
   flushThresholdBytes:
     type: number
     default: 262144
+  preparedSessionCacheSize:
+    type: number
+    required: false
+    description: PersistenceCoordinator unpublished-preparation LRU (JSONL default 5)
+  writeBatchMaxDelayMs:
+    type: number
+    required: false
+    description: PersistenceCoordinator write-behind delay in ms (JSONL default 200)

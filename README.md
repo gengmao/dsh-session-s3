@@ -59,11 +59,13 @@ Requires Node >= 18.
 | `bucket` | *(required)* | S3 bucket |
 | `prefix` | `dsh/` | Keys live at `{prefix}sessions/{sessionId}/` |
 | `region` | `auto` | AWS region, or `auto` for R2 |
-| `endpoint` | — | R2 / Tigris / MinIO / SeaweedFS / GCS interop |
+| `endpoint` | — | R2 / Tigris / MinIO / SeaweedFS / GCS interop (must be `http(s)`) |
 | `forcePathStyle` | `true` when `endpoint` is set | Path-style URLs |
 | `accessKeyId` / `secretAccessKey` | unset | Only for static keys. Prefer the SDK default chain (see below) |
 | `flushThresholdEvents` | `50` | Flush the in-memory buffer after N events |
 | `flushThresholdBytes` | `262144` | …or after 256 KiB |
+| `preparedSessionCacheSize` | coordinator default (5) | LRU of unpublished preparations |
+| `writeBatchMaxDelayMs` | coordinator default (200) | Write-behind delay |
 
 Invalid config **fails loud at load**, listing every problem (not just the first).
 
@@ -117,7 +119,7 @@ aws configure
 aws sso login --profile myprofile
 export AWS_PROFILE=myprofile
 export AWS_REGION=us-west-2
-export DSH_S3_BUCKET=my-sessions
+# then set bucket in the profile overlay, not via a DSH_S3_* env
 ```
 
 ### IAM user / access keys (CI, MinIO, R2)
@@ -125,7 +127,7 @@ export DSH_S3_BUCKET=my-sessions
 ```bash
 export AWS_ACCESS_KEY_ID=AKIA...
 export AWS_SECRET_ACCESS_KEY=...
-export DSH_S3_BUCKET=my-sessions
+# bucket still comes from the profile overlay `config.bucket`
 ```
 
 Only set `accessKeyId` / `secretAccessKey` in plugin config when you cannot use env or the chain. Do not commit them.
@@ -142,14 +144,26 @@ Attach an instance or task role. Do not set keys. The SDK picks up the role.
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
       "Resource": "arn:aws:s3:::my-sessions/dsh/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::my-sessions",
+      "Condition": {
+        "StringLike": { "s3:prefix": ["dsh/*"] }
+      }
     }
   ]
 }
 ```
 
-`If-Match` / `If-None-Match` are request headers, not extra IAM actions. `s3:ListBucket` is not required today.
+`If-Match` / `If-None-Match` are request headers, not extra IAM actions. `list()` / `listSnapshots()` call `ListObjectsV2` and need `s3:ListBucket`.
 
 ### R2 / MinIO / Tigris
 
@@ -158,9 +172,7 @@ Same keys, plus `endpoint`. Path-style is on automatically when `endpoint` is se
 ```bash
 export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
-export DSH_S3_BUCKET=my-sessions
-export DSH_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
-export DSH_S3_REGION=auto
+# set endpoint + bucket on the plugin config in the profile overlay
 ```
 
 ### Check CAS
@@ -184,11 +196,11 @@ s3://{bucket}/{prefix}sessions/{sessionId}/
 Write path (`flush`):
 
 1. Buffer is serialized as a JSONL fragment (`seq = last + 1`).
-2. `PutObject` with `If-None-Match: *`. On 412, reload the manifest, skip the orphan seq, retry.
-3. CAS-update `manifest.json` (`If-Match`) to append the fragment ref.
-4. Clear the buffer only after the CAS succeeds.
+2. `PutObject` with `If-None-Match: *` and a **quoted** ETag on later `If-Match`. On 412, reload the manifest, take `seq = max(manifest+1, seq+1)`, retry.
+3. CAS-update `manifest.json` (`If-Match`) to append the fragment ref (idempotent on seq and tail sha256).
+4. Drop only the snapshotted prefix of the buffer after CAS succeeds (events appended during the flush stay).
 
-A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifest is source of truth, and the next flush skips that seq.
+A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifest is source of truth, and the next flush advances past occupied seqs (`max(manifest+1, seq+1)`).
 
 ## S3 compatibility
 
