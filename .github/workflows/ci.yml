@@ -48,12 +48,13 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Start MinIO
+        # Pin the last public minio/minio RELEASE (hub.docker.com/r/minio/minio).
         run: |
           docker run -d --name minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data --console-address :9001
+            minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data --console-address :9001
       - name: Wait for MinIO
         run: |
           for i in $(seq 1 30); do

@@ -4,11 +4,42 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { createProvider } from "../src/provider.js";
+import { SessionId } from "@deepseek-ai/dsh-session";
+import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
+import { S3PersistenceBackend } from "../src/backend.js";
 import { parseConfig } from "../src/config.js";
+import { StaleWriterError } from "../src/errors.js";
+import { createProvider } from "../src/provider.js";
 import { createS3Client } from "../src/s3log.js";
 
 const enabled = process.env.S3_IT === "1";
+
+type TurnStart = Extract<SessionEvent, { type: "turn/start" }>;
+
+function header(id: string): SessionHeader {
+  return { version: 0, id: SessionId(id), createdAt: 1_700_000_000_000, cwd: "/work" };
+}
+
+function ev(seq: number, turn = seq): TurnStart {
+  return { type: "turn/start", seq, time: 1_700_000_000_000 + seq, data: { turn } };
+}
+
+function itEnv() {
+  const bucket = process.env.S3_BUCKET;
+  const endpoint = process.env.S3_ENDPOINT;
+  if (!bucket) throw new Error("S3_BUCKET is required when S3_IT=1");
+  const prefix = `dsh-it/${Date.now()}-${Math.random().toString(16).slice(2)}/`;
+  const cfg = {
+    bucket,
+    endpoint,
+    region: process.env.S3_REGION ?? "us-east-1",
+    prefix,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    forcePathStyle: true,
+  };
+  return { bucket, prefix, cfg, client: createS3Client(parseConfig(cfg)) };
+}
 
 async function emptyPrefix(client: S3Client, bucket: string, prefix: string): Promise<void> {
   let token: string | undefined;
@@ -28,27 +59,11 @@ async function emptyPrefix(client: S3Client, bucket: string, prefix: string): Pr
 }
 
 describe.skipIf(!enabled)("MinIO / S3 integration (S3_IT=1)", () => {
-  it("round-trips append/read and two writers contend via CAS", async () => {
-    const bucket = process.env.S3_BUCKET;
-    const endpoint = process.env.S3_ENDPOINT;
-    if (!bucket) throw new Error("S3_BUCKET is required when S3_IT=1");
-
-    const prefix = `dsh-it/${Date.now()}/`;
-    const cfg = {
-      bucket,
-      endpoint,
-      region: process.env.S3_REGION ?? "auto",
-      prefix,
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      forcePathStyle: true,
-      flushThresholdEvents: 1,
-    };
-    const client = createS3Client(parseConfig(cfg));
-
+  it("round-trips append/read and two library writers contend via CAS", async () => {
+    const { bucket, prefix, cfg, client } = itEnv();
     try {
-      const a = createProvider(cfg);
-      const b = createProvider(cfg);
+      const a = createProvider({ ...cfg, flushThresholdEvents: 1 });
+      const b = createProvider({ ...cfg, flushThresholdEvents: 1 });
       const sessionId = "it-shared";
       await Promise.all([
         a.append(sessionId, { who: "a" }),
@@ -61,6 +76,32 @@ describe.skipIf(!enabled)("MinIO / S3 integration (S3_IT=1)", () => {
       expect(events).toEqual(expect.arrayContaining([{ who: "a" }, { who: "b" }]));
       expect(events.length).toBeGreaterThanOrEqual(2);
       await reader.close(sessionId);
+    } finally {
+      await emptyPrefix(client, bucket, prefix);
+    }
+  });
+
+  it("fail-closes a stale DSH writer: one appendBatch wins, the other throws StaleWriterError", async () => {
+    const { bucket, prefix, cfg, client } = itEnv();
+    const resolved = parseConfig(cfg);
+    const a = new S3PersistenceBackend(resolved);
+    const b = new S3PersistenceBackend(resolved);
+    const meta = header("it-dsh");
+    try {
+      const results = await Promise.allSettled([
+        a.appendBatch(meta, [ev(0, 1)], false),
+        b.appendBatch(meta, [ev(0, 99)], false),
+      ]);
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleWriterError);
+      const stored = await a.loadStored(SessionId("it-dsh"));
+      expect(stored?.events).toHaveLength(1);
+      expect(stored?.events[0]?.seq).toBe(0);
+      const turn = (stored?.events[0] as TurnStart | undefined)?.data.turn;
+      expect(turn === 1 || turn === 99).toBe(true);
     } finally {
       await emptyPrefix(client, bucket, prefix);
     }
