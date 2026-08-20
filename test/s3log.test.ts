@@ -121,14 +121,12 @@ describe("S3SessionLog", () => {
   it("reallocates a stale fragment ordinal above the committed tail", async () => {
     const store = new MemoryCasStore();
     const a = await openLog(store);
-    a.append({ from: "a", seq: 0 });
-    store.crashAfterFragmentPut = true;
-    await expect(a.flush()).rejects.toThrow(/simulated crash after fragment PUT/);
-
     const b = await openLog(store);
+    a.append({ from: "a", seq: 0 });
     b.append({ from: "b", seq: 0 });
-    await b.flush();
-
+    store.afterFragmentPut = async () => {
+      await b.flush();
+    };
     await a.flush();
     const manifest = parseManifestBuffer((await store.get("manifest.json"))!.body);
     const seqs = manifest.fragments.map((f) => f.seq);
@@ -138,6 +136,17 @@ describe("S3SessionLog", () => {
       { from: "b", seq: 0 },
       { from: "a", seq: 0 },
     ]);
+  });
+
+  it("uncontended flush is one GET plus two PUTs", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    store.getCount = 0;
+    store.putCount = 0;
+    log.append(event(0));
+    await log.flush();
+    expect(store.getCount).toBe(1);
+    expect(store.putCount).toBe(2);
   });
 
   it("concurrent flushes never produce an out-of-order fragment list", async () => {

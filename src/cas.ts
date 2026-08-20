@@ -28,6 +28,11 @@ export interface CasUpdateOptions {
   maxRetries?: number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /**
+   * First-attempt snapshot so the uncontended path can skip a GET.
+   * `null` means known-absent (putIfAbsent). After a 412, casUpdate reloads.
+   */
+  known?: { body: Buffer; etag: string } | null;
 }
 
 const DEFAULT_MAX_RETRIES = 10;
@@ -55,9 +60,11 @@ export async function casUpdate<T>(
   const random = opts?.random ?? Math.random;
 
   let lastError: unknown;
+  let snapshot: { body: Buffer; etag: string } | null | undefined = opts?.known;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const current = await store.get(key);
+      const current = snapshot !== undefined ? snapshot : await store.get(key);
+      snapshot = undefined;
       const value = mutate(current ? parse(current.body) : null);
       const body = serialize(value);
       const etag = current

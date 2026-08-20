@@ -238,9 +238,7 @@ immediately dead would reintroduce a delete-versus-publish race.
 
 ## Operational tradeoffs
 
-- **Request count:** a flush normally costs one fragment PUT plus a manifest
-  GET and conditional PUT. Reads cost one manifest GET plus one GET per
-  referenced fragment.
+- **Request count:** an uncontended flush is one manifest GET, one fragment PUT, and one conditional manifest PUT. The first GET's ETag is reused for the CAS; a second GET happens only after a 412. Reads cost one manifest GET plus one GET per referenced fragment.
 - **Manifest growth:** each append reads and rewrites the complete fragment
   reference array. Metadata work therefore grows with fragment count; batching
   limits that cost, while Phase 2 compaction/verified GC is needed for

@@ -69,6 +69,19 @@ describe("casUpdate", () => {
     ).rejects.toThrow("boom");
   });
 
+  it("skips the first GET when known is provided", async () => {
+    const store = new MemoryCasStore();
+    await casUpdate(store, "n", () => 1, parseNum, serNum, fastCas);
+    const snap = await store.get("n");
+    const gets = store.getCount;
+    const result = await casUpdate(store, "n", (cur) => (cur ?? 0) + 1, parseNum, serNum, {
+      ...fastCas,
+      known: snap,
+    });
+    expect(result.value).toBe(2);
+    expect(store.getCount).toBe(gets);
+  });
+
   it("passes null to mutate when the key is absent", async () => {
     const store = new MemoryCasStore();
     const seen: Array<number | null> = [];

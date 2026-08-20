@@ -8,12 +8,14 @@ import { serializeFragment } from "../src/fragment.js";
 import { parseManifestBuffer } from "../src/manifest.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
+type TurnStart = Extract<SessionEvent, { type: "turn/start" }>;
+
 function header(id = "sess-1"): SessionHeader {
   return { version: 0, id: SessionId(id), createdAt: 1_700_000_000_000, cwd: "/work" };
 }
 
-function ev(seq: number): SessionEvent {
-  return { type: "turn/start", seq, time: 1_700_000_000_000 + seq, data: { turn: seq } };
+function ev(seq: number, turn = seq): TurnStart {
+  return { type: "turn/start", seq, time: 1_700_000_000_000 + seq, data: { turn } };
 }
 
 function backend(store = new MemoryCasStore()) {
@@ -65,8 +67,8 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
       fastCas,
     );
     const results = await Promise.allSettled([
-      a.appendBatch(header(), [{ ...ev(0), data: { turn: 1 } }], false),
-      b.appendBatch(header(), [{ ...ev(0), data: { turn: 99 } }], false),
+      a.appendBatch(header(), [ev(0, 1)], false),
+      b.appendBatch(header(), [ev(0, 99)], false),
     ]);
     const fulfilled = results.filter((r) => r.status === "fulfilled");
     const rejected = results.filter((r) => r.status === "rejected");

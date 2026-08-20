@@ -199,12 +199,12 @@ s3://{bucket}/{prefix}sessions/{sessionId}/
 
 Write path (`flush`):
 
-1. Buffer is serialized as a JSONL fragment (`seq = last + 1`).
-2. `PutObject` with `If-None-Match: *` and a **quoted** ETag on later `If-Match`. On 412, reload the manifest, take `seq = max(manifest+1, seq+1)`, retry.
-3. CAS-update `manifest.json` (`If-Match`) to append the fragment ref (idempotent on seq and tail sha256).
+1. GET `manifest.json`. If the tail already has this batch's SHA-256, treat it as a lost CAS response.
+2. Buffer is serialized as a JSONL fragment (`seq = last + 1`). `PutObject` with `If-None-Match: *`. On 412, LIST occupied keys, take `seq = max(manifest+1, maxOccupied+1)`, retry.
+3. Conditional PUT `manifest.json` with the ETag from step 1 (`If-Match`, quoted). Reload only after a 412. Idempotent on seq and tail sha256.
 4. Drop only the snapshotted prefix of the buffer after CAS succeeds (events appended during the flush stay).
 
-A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifest is source of truth, and the next flush advances past occupied seqs (`max(manifest+1, seq+1)`).
+Uncontended single-writer flush is three S3 requests. A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifest is source of truth.
 
 The successful conditional PUT of `manifest.json` is the commit point. Fragment
 sequence numbers order storage objects; they are not DSH event `seq` values.

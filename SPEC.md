@@ -117,13 +117,11 @@ Library WAL used by `createProvider` and (indirectly) by the backend.
 
 Write flow (`flush`), serialized per log:
 1. Snapshot `count = buffer.length` (later appends are kept).
-2. If the live manifest tail already has this sha256, drop the snapshot (lost CAS response).
-3. `putIfAbsent(fragmentKey(seq))`. On 412: reload manifest, **LIST `fragments/`** for the true max occupied seq, `seq = max(fromManifest, maxOccupied+1, seq+1)`, retry (max 10) then `CasRetryExhaustedError`. A run of crash-orphans therefore costs one LIST, not one retry per seq.
-4. `casUpdate` `manifest.json` (idempotent on seq and tail sha256).
-5. `buffer = buffer.slice(count)`.
+2. GET `manifest.json`. If the live tail already has this sha256, drop the snapshot (lost CAS response).
+3. `putIfAbsent(fragmentKey(seq))`. On 412: LIST `fragments/` for the true max occupied seq, retry.
+4. Conditional PUT `manifest.json` using the ETag from step 2. Reload only after a 412.
 
-`open()` rejects if `manifest.session_id` ≠ the id being opened.
-`trim(0)` drops every fragment (CAS first, then delete).
+Uncontended single-writer flush is **3 S3 requests** (GET + fragment PUT + manifest PUT). `open()` rejects if `manifest.session_id` ≠ the id being opened. `trim(0)` drops every fragment (CAS first, then delete).
 
 ## 9. DSH seam (persistence.ts + backend.ts)
 

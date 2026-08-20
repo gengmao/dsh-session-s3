@@ -276,6 +276,7 @@ export async function publishFragment(
     return start;
   }
 
+  let known: { body: Buffer; etag: string } | null | undefined = existing;
   let seq = (last?.seq ?? 0) + 1;
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_FRAGMENT_PUT_RETRIES; attempt++) {
@@ -304,7 +305,7 @@ export async function publishFragment(
         (current) => mutate(current ?? emptyManifest(sessionId), ref),
         parseManifestBuffer,
         serializeManifestBuffer,
-        casOpts,
+        { ...casOpts, known },
       );
       return updated.value;
     } catch (error) {
@@ -312,6 +313,7 @@ export async function publishFragment(
       lastError = error;
       if (attempt === MAX_FRAGMENT_PUT_RETRIES) break;
       seq = await bumpFragmentSeq(store, seq);
+      known = await store.get(MANIFEST_KEY);
     }
   }
   const exhausted = new CasRetryExhaustedError(MANIFEST_KEY, MAX_FRAGMENT_PUT_RETRIES + 1);

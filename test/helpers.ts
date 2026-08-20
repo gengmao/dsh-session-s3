@@ -9,6 +9,10 @@ export class MemoryCasStore implements CasStore {
   crashAfterFragmentPut = false;
   /** After a successful conditional PUT, throw (models lost CAS response). */
   crashAfterSuccessfulConditionalPut = false;
+  /** Run once after a successful fragment PUT, before the caller continues to CAS. */
+  afterFragmentPut: (() => Promise<void>) | null = null;
+  getCount = 0;
+  putCount = 0;
   private seq = 0;
   private readonly delayMs: number;
 
@@ -18,6 +22,7 @@ export class MemoryCasStore implements CasStore {
 
   async get(key: string): Promise<{ body: Buffer; etag: string } | null> {
     await this.tick();
+    this.getCount += 1;
     const hit = this.objects.get(key);
     if (!hit) return null;
     return { body: Buffer.from(hit.body), etag: hit.etag };
@@ -34,9 +39,15 @@ export class MemoryCasStore implements CasStore {
     }
     const etag = this.nextEtag();
     this.objects.set(key, { body: Buffer.from(body), etag });
+    this.putCount += 1;
     if (this.crashAfterFragmentPut && /(?:^|\/)fragments\/\d+\.jsonl$/.test(key)) {
       this.crashAfterFragmentPut = false;
       throw new Error("simulated crash after fragment PUT, before manifest CAS");
+    }
+    if (this.afterFragmentPut && /(?:^|\/)fragments\/\d+\.jsonl$/.test(key)) {
+      const hook = this.afterFragmentPut;
+      this.afterFragmentPut = null;
+      await hook();
     }
     if (this.crashAfterSuccessfulConditionalPut && /(?:^|\/)manifest\.json$/.test(key)) {
       this.crashAfterSuccessfulConditionalPut = false;
@@ -57,6 +68,7 @@ export class MemoryCasStore implements CasStore {
     }
     const next = this.nextEtag();
     this.objects.set(key, { body: Buffer.from(body), etag: next });
+    this.putCount += 1;
     if (this.crashAfterSuccessfulConditionalPut && /(?:^|\/)manifest\.json$/.test(key)) {
       this.crashAfterSuccessfulConditionalPut = false;
       throw new Error("simulated lost CAS response");
