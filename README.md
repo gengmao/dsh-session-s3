@@ -8,6 +8,9 @@ Fixes the class of JSONL durability bugs that come from torn writes, missing fsy
 
 The 7 field-confirmed DSH corruption discussions ([#1333](https://github.com/deepseek-ai/deepseek-harness/discussions/1333), [#1452](https://github.com/deepseek-ai/deepseek-harness/discussions/1452), [#1497](https://github.com/deepseek-ai/deepseek-harness/discussions/1497), [#1473](https://github.com/deepseek-ai/deepseek-harness/discussions/1473), [#1586](https://github.com/deepseek-ai/deepseek-harness/discussions/1586), [#2167](https://github.com/deepseek-ai/deepseek-harness/discussions/2167), [#2342](https://github.com/deepseek-ai/deepseek-harness/discussions/2342)) are encoded as tests in `test/corruption-scenarios.test.ts`. Results: [docs/corruption-scenarios.md](docs/corruption-scenarios.md).
 
+For the correctness boundary, commit point, crash states, sequence domains,
+and rejected alternatives, see [Design rationale](docs/design-rationale.md).
+
 ## Install
 
 Plugins install into a **profile** (`$DSH_HOME/profiles/<name>`), not globally. `dsh plugin` is a pnpm forwarder: it adds the package as a dependency, and because this repo declares `dsh.bundle.patch`, it also appends `dsh-session-s3` to `dsh.profile.bundles`.
@@ -62,10 +65,10 @@ Requires Node >= 18.
 | `endpoint` | — | R2 / Tigris / MinIO / SeaweedFS / GCS interop (must be `http(s)`) |
 | `forcePathStyle` | `true` when `endpoint` is set | Path-style URLs |
 | `accessKeyId` / `secretAccessKey` | unset | Only for static keys. Prefer the SDK default chain (see below) |
-| `flushThresholdEvents` | `50` | Flush the in-memory buffer after N events |
-| `flushThresholdBytes` | `262144` | …or after 256 KiB |
-| `preparedSessionCacheSize` | coordinator default (5) | LRU of unpublished preparations |
-| `writeBatchMaxDelayMs` | coordinator default (200) | Write-behind delay |
+| `flushThresholdEvents` | `50` | Library `createProvider()` only: flush its in-memory buffer after N events |
+| `flushThresholdBytes` | `262144` | Library `createProvider()` only: flush after 256 KiB |
+| `preparedSessionCacheSize` | coordinator default (5) | DSH seam: LRU of unpublished preparations |
+| `writeBatchMaxDelayMs` | coordinator default (200) | DSH seam: coordinator write-behind delay |
 
 Invalid config **fails loud at load**, listing every problem (not just the first).
 
@@ -97,7 +100,7 @@ const persistence = createProvider({
 
 await persistence.append("sess-1", { type: "user/message", text: "hi" });
 const events = await persistence.read("sess-1");
-await persistence.compact("sess-1", 10);
+await persistence.compact("sess-1", 10); // keep the last 10 fragments
 await persistence.close("sess-1");
 ```
 
@@ -202,6 +205,12 @@ Write path (`flush`):
 
 A crash between (2) and (3) leaves an **orphan fragment**. Harmless: the manifest is source of truth, and the next flush advances past occupied seqs (`max(manifest+1, seq+1)`).
 
+The successful conditional PUT of `manifest.json` is the commit point. Fragment
+sequence numbers order storage objects; they are not DSH event `seq` values.
+CAS preserves every writer's bytes but does not allocate cross-process event
+sequences. See [Design rationale](docs/design-rationale.md) for the precise
+guarantees and remaining races.
+
 ## S3 compatibility
 
 | Backend | If-Match / If-None-Match | Phase 1 |
@@ -227,7 +236,7 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 
 1. **Same composition as JSONL.** `S3SessionPersistence` extends `@deepseek-ai/dsh-session-persistence`'s `SessionPersistence` and implements `PersistenceBackend`, then constructs `PersistenceCoordinator(ctx, this)`. Cold `load` therefore emits synthetic interrupted-turn closers; `instanceof SessionPersistence` is true. Peer deps (`cordis`, `dsh-session`, `dsh-session-persistence`) are provided by the DSH profile at install time.
 2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
-3. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256.
+3. **Response ambiguity is bounded, not exactly-once.** A fragment PUT can leave an orphan, and the library helper recognizes a lost manifest response by matching the tail SHA-256 and event count. That also means intentionally identical consecutive library batches may collapse. DSH cross-process event semantics still require coordination above this log.
 4. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. DSH uses the default class export.
 5. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 

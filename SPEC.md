@@ -3,6 +3,9 @@
 Community DSH plugin: S3-backed SessionPersistence ("wal3-Lite").
 Immutable fragments + CAS manifest. Per-fragment SHA-256. No setsum (Phase 2+).
 
+This file is the Phase 1 behavioral contract. The reasoning behind the
+protocol and its tradeoffs is in [`docs/design-rationale.md`](docs/design-rationale.md).
+
 Language: TypeScript (ESM, Node >= 18).
 Deps: `@aws-sdk/client-s3`, `zod`.
 Peers (provided by a DSH profile): `@deepseek-ai/cordis`, `@deepseek-ai/dsh-session`, `@deepseek-ai/dsh-session-persistence`.
@@ -158,14 +161,18 @@ interface PluginConfig {
   forcePathStyle?: boolean;          // default true when endpoint set
   accessKeyId?: string;              // else AWS_ACCESS_KEY_ID / SDK chain
   secretAccessKey?: string;
-  flushThresholdEvents?: number;     // default 50
-  flushThresholdBytes?: number;      // default 262144
-  preparedSessionCacheSize?: number; // coordinator LRU
-  writeBatchMaxDelayMs?: number;     // coordinator write-behind
+  flushThresholdEvents?: number;     // createProvider only; default 50
+  flushThresholdBytes?: number;      // createProvider only; default 262144
+  preparedSessionCacheSize?: number; // DSH coordinator LRU
+  writeBatchMaxDelayMs?: number;     // DSH coordinator write-behind
 }
 ```
 
 cordis.yml service key: `sessionPersistence`. Bundle patch `cordis.patch.yml` replaces the profile `sessions` row.
+
+Fragment `seq` is a one-based storage ordinal. It is independent of the
+zero-based `SessionEvent.seq`; manifest CAS orders fragment references but does
+not reserve event sequence numbers across processes.
 
 ## 11. Tests (vitest, in-memory `MemoryCasStore` unless noted)
 

@@ -39,3 +39,6 @@ cursor (the same class of bug as JSONL [#2167](https://github.com/deepseek-ai/de
 without a cross-process lock). wal3-Lite will store both as distinct fragments;
 the payload seqs may collide. Cross-process CAS on the manifest prevents
 silent overwrite of bytes, not colliding coordinator-assigned seqs.
+
+The distinction between storage ordering and DSH event ordering is detailed in
+[Design rationale](design-rationale.md#storage-sequence-is-not-event-sequence).
