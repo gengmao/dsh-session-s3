@@ -15,6 +15,7 @@ import {
   fragmentKey,
   jsonLine,
   parseFragment,
+  seqFromFragmentKey,
   serializeFragment,
   sha256Hex,
 } from "./fragment.js";
@@ -220,6 +221,21 @@ export function createS3CasStore(config: ResolvedPluginConfig, sessionId: string
   );
 }
 
+/**
+ * Next fragment seq that is free on the store: max(floor, maxOccupied+1).
+ * Used after a 412 so a run of crash-orphans does not burn the retry budget
+ * one seq at a time.
+ */
+export async function nextFreeFragmentSeq(store: CasStore, floor: number): Promise<number> {
+  const keys = await store.listKeys("fragments/");
+  let maxOccupied = 0;
+  for (const key of keys) {
+    const seq = seqFromFragmentKey(key);
+    if (seq !== null) maxOccupied = Math.max(maxOccupied, seq);
+  }
+  return Math.max(floor, maxOccupied + 1);
+}
+
 export class S3SessionLog {
   private buffer: unknown[] = [];
   private bufferBytes = 0;
@@ -324,7 +340,7 @@ export class S3SessionLog {
         }
         await this.reloadManifest();
         const fromManifest = this.nextSeq();
-        seq = Math.max(fromManifest, seq + 1);
+        seq = await nextFreeFragmentSeq(this.store, Math.max(fromManifest, seq + 1));
         key = fragmentKey(seq);
       }
     }

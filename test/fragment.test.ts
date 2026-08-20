@@ -3,6 +3,7 @@ import {
   checkpointKey,
   fragmentKey,
   parseFragment,
+  seqFromFragmentKey,
   serializeFragment,
   sha256Hex,
 } from "../src/fragment.js";
@@ -40,6 +41,12 @@ describe("fragment", () => {
     expect(fragmentKey(1)).toBe("fragments/00000001.jsonl");
     expect(fragmentKey(42)).toBe("fragments/00000042.jsonl");
     expect(fragmentKey(12345678)).toBe("fragments/12345678.jsonl");
+  });
+
+  it("parses seq out of a fragment object key", () => {
+    expect(seqFromFragmentKey("fragments/00000003.jsonl")).toBe(3);
+    expect(seqFromFragmentKey("dsh/sessions/x/fragments/00000012.jsonl")).toBe(12);
+    expect(seqFromFragmentKey("manifest.json")).toBeNull();
   });
 
   it("pads checkpoint keys to 8 digits", () => {

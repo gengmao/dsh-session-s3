@@ -18,7 +18,7 @@ import {
   type FragmentRef,
   type Manifest,
 } from "./manifest.js";
-import { createS3CasStore, createS3Client, S3CasStore } from "./s3log.js";
+import { createS3CasStore, createS3Client, nextFreeFragmentSeq, S3CasStore } from "./s3log.js";
 
 const MANIFEST_KEY = "manifest.json";
 const MAX_FRAGMENT_PUT_RETRIES = 10;
@@ -196,7 +196,7 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
         const latest = await store.get(MANIFEST_KEY);
         const live = latest ? parseManifestBuffer(latest.body) : manifest;
         const fromManifest = (live.fragments[live.fragments.length - 1]?.seq ?? 0) + 1;
-        seq = Math.max(fromManifest, seq + 1);
+        seq = await nextFreeFragmentSeq(store, Math.max(fromManifest, seq + 1));
         key = fragmentKey(seq);
       }
     }

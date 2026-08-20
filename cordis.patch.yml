@@ -13,6 +13,9 @@
 #   plugin package   = dsh-session-s3
 #   cordis.yml id    = dsh-session-persistence-s3
 #   Cordis service   = sessionPersistence  (extends official SessionPersistence)
+#
+# WARNING: `bucket: my-sessions` below is a placeholder. Edit this overlay
+# (or $DSH_HOME/profiles/<name>/cordis.patch.yml) before starting DSH.
 
 - id: sessions
   name: dsh-session-s3

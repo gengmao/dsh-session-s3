@@ -53,7 +53,9 @@ Same action in the Web UI: **Settings → Plugins**. Restart `dsh web` (or `dsh 
 
 Remove with `dsh plugin --profile web remove dsh-session-s3`.
 
-Requires Node >= 18.
+Requires **Node >= 22** (`PersistenceCoordinator` uses `Promise.withResolvers`; a polyfill is loaded at import so 18–21 do not crash, but DSH itself wants 22).
+
+Peer packages (`@deepseek-ai/dsh-session`, `dsh-session-persistence`) come from the DSH profile. A standalone `npm install` of this repo uses `.npmrc` `legacy-peer-deps=true` because `@deepseek-ai/dsh-type-meta` is unpublished on npmjs.
 
 ## Config
 
@@ -237,7 +239,7 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 1. **Same composition as JSONL.** `S3SessionPersistence` extends `@deepseek-ai/dsh-session-persistence`'s `SessionPersistence` and implements `PersistenceBackend`, then constructs `PersistenceCoordinator(ctx, this)`. Cold `load` therefore emits synthetic interrupted-turn closers; `instanceof SessionPersistence` is true. Peer deps (`cordis`, `dsh-session`, `dsh-session-persistence`) are provided by the DSH profile at install time.
 2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
 3. **Response ambiguity is bounded, not exactly-once.** A fragment PUT can leave an orphan, and the library helper recognizes a lost manifest response by matching the tail SHA-256 and event count. That also means intentionally identical consecutive library batches may collapse. DSH cross-process event semantics still require coordination above this log.
-4. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. DSH uses the default class export.
+4. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. DSH uses the default class export. **`read()` includes the in-memory buffer** (not yet on S3). `compact` / `close` flush first.
 5. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 
 ## Roadmap

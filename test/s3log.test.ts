@@ -100,6 +100,24 @@ describe("S3SessionLog", () => {
     expect(await resumed.readAll()).toEqual([event(0), event(1)]);
   });
 
+  it("LIST-skips a run of orphans that would otherwise exhaust the PUT budget", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    log.append(event(0));
+    await log.flush();
+    for (let seq = 2; seq <= 12; seq++) {
+      await store.putIfAbsent(
+        `fragments/${seq.toString().padStart(8, "0")}.jsonl`,
+        serializeFragment([{ orphan: seq }]),
+      );
+    }
+    const resumed = await openLog(store);
+    resumed.append(event(1));
+    await resumed.flush();
+    expect(store.keys()).toContain("fragments/00000013.jsonl");
+    expect(await resumed.readAll()).toEqual([event(0), event(1)]);
+  });
+
   it("keeps events appended while flush is in flight", async () => {
     const store = new MemoryCasStore({ delayMs: 20 });
     const log = await openLog(store);

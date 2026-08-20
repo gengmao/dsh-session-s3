@@ -6,7 +6,7 @@ Immutable fragments + CAS manifest. Per-fragment SHA-256. No setsum (Phase 2+).
 This file is the Phase 1 behavioral contract. The reasoning behind the
 protocol and its tradeoffs is in [`docs/design-rationale.md`](docs/design-rationale.md).
 
-Language: TypeScript (ESM, Node >= 18).
+Language: TypeScript (ESM, **Node >= 22**; `Promise.withResolvers` polyfill for 18–21).
 Deps: `@aws-sdk/client-s3`, `zod`.
 Peers (provided by a DSH profile): `@deepseek-ai/cordis`, `@deepseek-ai/dsh-session`, `@deepseek-ai/dsh-session-persistence`.
 
@@ -119,7 +119,7 @@ Library WAL used by `createProvider` and (indirectly) by the backend.
 Write flow (`flush`), serialized per log:
 1. Snapshot `count = buffer.length` (later appends are kept).
 2. If the live manifest tail already has this sha256, drop the snapshot (lost CAS response).
-3. `putIfAbsent(fragmentKey(seq))`. On 412: reload manifest, `seq = Math.max(fromManifest, seq + 1)`, retry (max 10) then `CasRetryExhaustedError`.
+3. `putIfAbsent(fragmentKey(seq))`. On 412: reload manifest, **LIST `fragments/`** for the true max occupied seq, `seq = max(fromManifest, maxOccupied+1, seq+1)`, retry (max 10) then `CasRetryExhaustedError`. A run of crash-orphans therefore costs one LIST, not one retry per seq.
 4. `casUpdate` `manifest.json` (idempotent on seq and tail sha256).
 5. `buffer = buffer.slice(count)`.
 

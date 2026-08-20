@@ -1,3 +1,4 @@
+import "./polyfill.js";
 import { type Context } from "@deepseek-ai/cordis";
 import type { SessionEvent, SessionHeader, SessionId, SessionPreparation } from "@deepseek-ai/dsh-session";
 import {

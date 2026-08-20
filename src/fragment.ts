@@ -48,6 +48,14 @@ export function fragmentKey(seq: number): string {
   return `fragments/${seq.toString().padStart(8, "0")}.jsonl`;
 }
 
+/** Parse `fragments/00000003.jsonl` (optionally prefixed). */
+export function seqFromFragmentKey(key: string): number | null {
+  const match = /(?:^|\/)fragments\/(\d+)\.jsonl$/.exec(key);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isInteger(seq) && seq >= 1 ? seq : null;
+}
+
 export function checkpointKey(seq: number): string {
   if (!Number.isInteger(seq) || seq < 0) {
     throw new FragmentCorruptError(`checkpoint seq must be a non-negative integer, got ${seq}`);

@@ -100,9 +100,12 @@ The successful conditional PUT of `manifest.json` is the write's
 **linearization point**. Uploading a fragment is preparation; publishing its
 reference is the commit. A 412 on the manifest is an expected race: the writer
 reloads the manifest, reapplies its mutation, and retries with exponential
-backoff and jitter. A fragment-key 412 instead advances to a new storage
-sequence. A non-conflict S3 error is surfaced because retrying it blindly
-cannot prove whether the server committed the request.
+backoff and jitter. A fragment-key 412 is also expected (an orphan or a
+concurrent PUT occupies that seq): the writer LISTs `fragments/` for the true
+max occupied seq and retries at `max(manifest+1, maxOccupied+1, seq+1)`. A
+dense run of crash-orphans therefore costs one LIST, not one retry per seq. A
+non-conflict S3 error is surfaced because retrying it blindly cannot prove
+whether the server committed the request.
 
 This design requires a backend that atomically enforces `If-Match` and
 `If-None-Match`. A service that accepts the headers but ignores them can lose
@@ -125,7 +128,7 @@ the object-store preconditions serialize independent instances.
 | Failure boundary | Durable result | Recovery behavior |
 | --- | --- | --- |
 | Before fragment PUT | No new remote state | Retry the buffered batch |
-| Fragment PUT succeeds; manifest PUT does not | Unreferenced orphan | Readers ignore it; a later writer skips the occupied fragment sequence |
+| Fragment PUT succeeds; manifest PUT does not | Unreferenced orphan | Readers ignore it; a later writer LISTs occupied keys and publishes at the next free fragment seq |
 | Manifest CAS returns 412 | Another manifest version won | Reload, remutate, and retry |
 | Manifest CAS succeeds; response is lost | Batch may already be published | `S3SessionLog` recognizes the same tail SHA-256 and event count on retry |
 | Manifest succeeds; process dies before buffer drop | Batch is published | The same library retry check avoids republishing the buffered snapshot |
