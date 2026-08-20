@@ -7,8 +7,7 @@ import {
   type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { casUpdate, type CasStore, type CasUpdateOptions } from "./cas.js";
-import type { ResolvedPluginConfig } from "./config.js";
-import { sessionKeyPrefix } from "./config.js";
+import { assertSessionId, sessionKeyPrefix, type ResolvedPluginConfig } from "./config.js";
 import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, ManifestCorruptError, S3AccessError, S3LogError, StaleFragmentSeqError } from "./errors.js";
 import {
   fragmentKey,
@@ -166,6 +165,32 @@ export class S3CasStore implements CasStore {
         token = out.IsTruncated === true ? out.NextContinuationToken : undefined;
       } while (token);
       return keys;
+    } catch (error) {
+      wrapS3(error, "LIST", objectPrefix);
+    }
+  }
+
+  async listPrefixes(prefix = ""): Promise<string[]> {
+    const prefixes: string[] = [];
+    const objectPrefix = this.fullKey(prefix);
+    let token: string | undefined;
+    try {
+      do {
+        const out = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: this.bucket,
+            Prefix: objectPrefix,
+            Delimiter: "/",
+            ContinuationToken: token,
+          }),
+        );
+        for (const common of out.CommonPrefixes ?? []) {
+          if (!common.Prefix) continue;
+          prefixes.push(common.Prefix.slice(this.keyPrefix.length));
+        }
+        token = out.IsTruncated === true ? out.NextContinuationToken : undefined;
+      } while (token);
+      return prefixes;
     } catch (error) {
       wrapS3(error, "LIST", objectPrefix);
     }
@@ -342,6 +367,7 @@ export class S3SessionLog {
   private readonly flushThresholdBytes: number;
   private readonly casOpts?: CasUpdateOptions;
   private flushTail: Promise<void> = Promise.resolve();
+  private inFlight: { count: number; body: Buffer } | null = null;
 
   constructor(
     readonly store: CasStore,
@@ -360,17 +386,10 @@ export class S3SessionLog {
     sessionId: string,
     opts?: S3SessionLogOptions,
   ): Promise<S3SessionLog> {
+    assertSessionId(sessionId);
     const existing = await store.get(MANIFEST_KEY);
     if (!existing) {
-      const created = await casUpdate(
-        store,
-        MANIFEST_KEY,
-        (current) => current ?? emptyManifest(sessionId),
-        parseManifestBuffer,
-        serializeManifestBuffer,
-        opts?.cas,
-      );
-      return new S3SessionLog(store, sessionId, opts, created.value);
+      return new S3SessionLog(store, sessionId, opts, emptyManifest(sessionId));
     }
     const parsed = parseManifestBuffer(existing.body);
     if (parsed.session_id !== sessionId) {
@@ -408,20 +427,25 @@ export class S3SessionLog {
   }
 
   private async flushOnce(): Promise<void> {
-    if (this.buffer.length === 0) return;
+    if (this.buffer.length === 0 && !this.inFlight) return;
 
-    const count = this.buffer.length;
-    const events = this.buffer.slice(0, count);
-    const body = serializeFragment(events);
+    if (!this.inFlight) {
+      const count = this.buffer.length;
+      this.inFlight = {
+        count,
+        body: serializeFragment(this.buffer.slice(0, count), { unique: true }),
+      };
+    }
     this.manifest = await publishFragment(
       this.store,
       this.sessionId,
-      body,
-      events.length,
+      this.inFlight.body,
+      this.inFlight.count,
       this.casOpts,
       (base, ref) => appendFragmentRef(base, ref),
     );
-    this.dropFlushed(count);
+    this.dropFlushed(this.inFlight.count);
+    this.inFlight = null;
   }
 
   async readAll(): Promise<unknown[]> {
@@ -450,6 +474,9 @@ export class S3SessionLog {
     }
     await this.flush();
     await this.reloadManifest();
+    if (this.manifest.header !== null) {
+      throw new S3LogError("refusing to trim a DSH-managed session", "TRIM");
+    }
     if (keepLastNFragments === 0) {
       // drop everything
     } else if (this.manifest.fragments.length <= keepLastNFragments) {

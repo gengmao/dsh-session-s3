@@ -13,12 +13,14 @@ function sample(): Manifest {
   return {
     version: 1,
     session_id: "s1",
+    header: null,
     fragments: [
       { seq: 1, key: "fragments/00000001.jsonl", bytes: 10, sha256: sha, events: 2 },
       { seq: 2, key: "fragments/00000002.jsonl", bytes: 5, sha256: sha, events: 1 },
     ],
     total_events: 3,
     total_bytes: 15,
+    next_event_seq: 3,
     updated_at: "2026-08-19T00:00:00.000Z",
   };
 }
@@ -31,12 +33,21 @@ describe("manifest", () => {
     expect(m.fragments).toEqual([]);
     expect(m.total_events).toBe(0);
     expect(m.total_bytes).toBe(0);
+    expect(m.header).toBeNull();
+    expect(m.next_event_seq).toBe(0);
     expect(m.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("round-trips a populated manifest", () => {
     const original = sample();
     expect(parseManifest(serializeManifest(original))).toEqual(original);
+  });
+
+  it("drops a malformed header instead of failing the whole manifest", () => {
+    const raw = { ...sample(), header: { version: "nope" } };
+    const parsed = parseManifest(JSON.stringify(raw));
+    expect(parsed.header).toBeNull();
+    expect(parsed.fragments).toHaveLength(2);
   });
 
   it("throws on invalid json", () => {

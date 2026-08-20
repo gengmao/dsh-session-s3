@@ -7,6 +7,8 @@ export interface CasStore {
   delete(key: string): Promise<void>;
   /** Keys relative to this store, optionally filtered by prefix. */
   listKeys(prefix?: string): Promise<string[]>;
+  /** Immediate child prefixes (trailing slash) under `prefix`. */
+  listPrefixes(prefix?: string): Promise<string[]>;
 }
 
 export function prefixStore(inner: CasStore, prefix: string): CasStore {
@@ -20,6 +22,10 @@ export function prefixStore(inner: CasStore, prefix: string): CasStore {
     listKeys: async (sub = "") => {
       const keys = await inner.listKeys(rel(sub));
       return keys.map((key) => (key.startsWith(p) ? key.slice(p.length) : key));
+    },
+    listPrefixes: async (sub = "") => {
+      const prefixes = await inner.listPrefixes(rel(sub));
+      return prefixes.map((key) => (key.startsWith(p) ? key.slice(p.length) : key));
     },
   };
 }

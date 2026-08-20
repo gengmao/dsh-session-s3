@@ -78,8 +78,10 @@ make ordering ambiguous.
 
 `manifest.json` is the reachability index. A fragment is part of the logical
 log if and only if the current manifest references it. The manifest also keeps
-The manifest also keeps the session header and aggregate counts in a
-single versioned snapshot.
+the session header, aggregate counts, and a monotonic `next_event_seq`
+watermark in a single versioned snapshot. Each flush rewrites that whole
+object, so bytes transferred grow with fragment count; Phase 1 expects
+`trim`/`compact` on long-lived logs.
 
 There is one manifest per session. Unrelated sessions never contend on a
 global lock; concurrent writes to the same session deliberately serialize on
@@ -250,8 +252,7 @@ immediately dead would reintroduce a delete-versus-publish race.
   amount of process-local buffered data but increase object count and CAS
   traffic. Larger thresholds do the reverse. In DSH, coordinator batching and
   `writeBatchMaxDelayMs` determine this tradeoff.
-- **Listing:** session discovery needs `ListObjectsV2`, but per-session
-  correctness never derives the event log from a bucket listing.
+- **Listing:** session discovery uses `ListObjectsV2` with `Delimiter: "/"` over `sessions/` (one GET per session manifest, not per fragment). Per-session correctness never derives the event log from a bucket listing.
 - **Cost of history:** without compaction or verified GC, immutable objects
   trade additional storage and requests for a smaller corruption blast radius.
 

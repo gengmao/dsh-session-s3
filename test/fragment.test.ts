@@ -64,4 +64,13 @@ describe("fragment", () => {
     expect(sha256Hex(buf)).toMatch(/^[0-9a-f]{64}$/);
     expect(sha256Hex(buf)).not.toBe(sha256Hex(serializeFragment([{ n: 2 }])));
   });
+
+  it("stamped fragments parse back to the same events and do not share a digest", () => {
+    const events = [{ type: "user/message", text: "hi" }];
+    const a = serializeFragment(events, { unique: true });
+    const b = serializeFragment(events, { unique: true });
+    expect(parseFragment(a)).toEqual(events);
+    expect(parseFragment(b)).toEqual(events);
+    expect(sha256Hex(a)).not.toBe(sha256Hex(b));
+  });
 });

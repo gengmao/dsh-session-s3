@@ -11,6 +11,7 @@ export {
 } from "./errors.js";
 export {
   parseConfig,
+  assertSessionId,
   type PluginConfig,
   type ResolvedPluginConfig,
   DEFAULT_FLUSH_BYTES,
@@ -28,6 +29,7 @@ export {
 } from "./fragment.js";
 export {
   emptyManifest,
+  eventSeqWatermark,
   parseManifest,
   serializeManifest,
   type FragmentRef,

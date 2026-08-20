@@ -38,7 +38,7 @@ describe("S3SessionLog", () => {
     const store = new MemoryCasStore();
     const log = await openLog(store);
     await log.flush();
-    expect(store.keys()).toEqual(["manifest.json"]);
+    expect(store.keys()).toEqual([]);
   });
 
   it("crash-resume: 100 flushed + 10 unflushed are lost cleanly, no corruption", async () => {
@@ -217,7 +217,9 @@ describe("S3SessionLog", () => {
 
   it("open rejects a manifest whose session_id does not match", async () => {
     const store = new MemoryCasStore();
-    await openLog(store, "alpha");
+    const alpha = await openLog(store, "alpha");
+    alpha.append(event(0));
+    await alpha.flush();
     await expect(openLog(store, "beta")).rejects.toBeInstanceOf(ManifestCorruptError);
   });
 
@@ -364,14 +366,24 @@ describe("S3SessionLog", () => {
     expect(byBytes.shouldFlush()).toBe(true);
   });
 
-  it("open of a brand-new session writes an empty manifest", async () => {
+  it("open of a brand-new session does not write a manifest until flush", async () => {
     const store = new MemoryCasStore();
     await openLog(store, "fresh");
-    const manifest = store.objects.get("manifest.json");
-    expect(manifest).toBeDefined();
-    const parsed = JSON.parse(manifest!.body.toString()) as Manifest;
-    expect(parsed.session_id).toBe("fresh");
-    expect(parsed.fragments).toEqual([]);
+    expect(store.objects.has("manifest.json")).toBe(false);
+  });
+
+  it("rejects a session id that would nest under the prefix", async () => {
+    await expect(openLog(new MemoryCasStore(), "a/b")).rejects.toThrow(/session id/);
+  });
+
+  it("consecutive identical flushes both commit", async () => {
+    const log = await openLog();
+    log.append({ same: true });
+    await log.flush();
+    log.append({ same: true });
+    await log.flush();
+    expect(await log.readAll()).toEqual([{ same: true }, { same: true }]);
+    expect(log.stats.fragmentCount).toBe(2);
   });
 
   it("fragment sha256 in the manifest matches the stored bytes", async () => {

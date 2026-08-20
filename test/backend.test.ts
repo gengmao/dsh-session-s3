@@ -3,9 +3,11 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
 import { parseConfig } from "../src/config.js";
 import { S3PersistenceBackend } from "../src/backend.js";
-import { StaleWriterError } from "../src/errors.js";
+import { S3LogError, StaleWriterError } from "../src/errors.js";
 import { serializeFragment } from "../src/fragment.js";
-import { parseManifestBuffer } from "../src/manifest.js";
+import { eventSeqWatermark, parseManifestBuffer } from "../src/manifest.js";
+import { prefixStore } from "../src/cas.js";
+import { S3SessionLog } from "../src/s3log.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
 type TurnStart = Extract<SessionEvent, { type: "turn/start" }>;
@@ -161,5 +163,36 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
     const lines = raw!.content.trim().split("\n");
     expect(JSON.parse(lines[0]!)).toMatchObject({ id: "sess-1" });
     expect(JSON.parse(lines[1]!)).toEqual(ev(0));
+  });
+
+  it("loads events even when the stored header is malformed", async () => {
+    const { store, backend: b } = backend();
+    await b.appendBatch(header(), [ev(0)], false);
+    const live = await store.get("dsh/sessions/sess-1/manifest.json");
+    const raw = JSON.parse(live!.body.toString()) as Record<string, unknown>;
+    raw.header = { version: "nope" };
+    store.smash("dsh/sessions/sess-1/manifest.json", Buffer.from(JSON.stringify(raw)));
+    const stored = await b.loadStored(SessionId("sess-1"));
+    expect(stored?.events).toEqual([ev(0)]);
+    expect(stored?.meta.id).toBe("sess-1");
+  });
+
+  it("refuses library trim of a DSH-managed session and keeps the event-seq watermark", async () => {
+    const { store, backend: b } = backend();
+    await b.appendBatch(header(), [ev(0), ev(1)], false);
+    const live = await store.get("dsh/sessions/sess-1/manifest.json");
+    expect(eventSeqWatermark(parseManifestBuffer(live!.body))).toBe(2);
+    const log = await S3SessionLog.open(prefixStore(store, "dsh/sessions/sess-1/"), "sess-1", {
+      cas: fastCas,
+    });
+    await expect(log.trim(0)).rejects.toBeInstanceOf(S3LogError);
+    await expect(log.trim(0)).rejects.toThrow(/DSH-managed/);
+    await b.appendBatch(header(), [ev(2)], true);
+    expect((await b.loadStored(SessionId("sess-1")))?.events).toHaveLength(3);
+  });
+
+  it("rejects a session id containing a slash", async () => {
+    const { backend: b } = backend();
+    await expect(b.appendBatch(header("a/b"), [ev(0)], false)).rejects.toThrow(/session id/);
   });
 });

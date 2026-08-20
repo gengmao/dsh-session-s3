@@ -13,15 +13,16 @@ import { FragmentCorruptError, S3LogError, StaleWriterError } from "./errors.js"
 import { parseFragment, serializeFragment, sha256Hex } from "./fragment.js";
 import {
   emptyManifest,
+  eventSeqWatermark,
   parseManifestBuffer,
   serializeManifestBuffer,
   type FragmentRef,
   type Manifest,
 } from "./manifest.js";
-import { createS3CasStore, createS3Client, appendFragmentRef, publishFragment, S3CasStore } from "./s3log.js";
+import { createS3CasStore, createS3Client, appendFragmentRef, publishFragment, quoteEtag, S3CasStore } from "./s3log.js";
 
 const MANIFEST_KEY = "manifest.json";
-const SESSION_MANIFEST_RE = /^sessions\/([^/]+)\/manifest\.json$/;
+const SESSION_PREFIX_RE = /^sessions\/([^/]+)\/$/;
 
 export interface S3TornMarker {
   dropFromSeq: number;
@@ -184,7 +185,7 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
         const last = base.fragments[base.fragments.length - 1];
         if (last && last.sha256 === ref.sha256 && last.events === ref.events) return base;
         if (base.fragments.some((f) => f.seq === ref.seq && f.sha256 === ref.sha256)) return base;
-        const expected = base.total_events;
+        const expected = eventSeqWatermark(base);
         const got = events[0]!.seq;
         if (got !== expected) {
           throw new StaleWriterError(id, expected, got);
@@ -192,6 +193,7 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
         const next = appendFragmentRef(base, ref);
         return {
           ...next,
+          next_event_seq: events[events.length - 1]!.seq + 1,
           header:
             (base.header as Manifest["header"]) ??
             (structuredClone(meta) as unknown as Manifest["header"]),
@@ -207,6 +209,12 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
   ): Promise<void> {
     if (tornMarker !== undefined) {
       const store = this.storeFor(meta.id);
+      const existing = await store.get(MANIFEST_KEY);
+      if (existing && quoteEtag(existing.etag) !== quoteEtag(tornMarker.etag)) {
+        const live = parseManifestBuffer(existing.body);
+        const last = live.fragments[live.fragments.length - 1]?.seq ?? 0;
+        throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last);
+      }
       await casUpdate(
         store,
         MANIFEST_KEY,
@@ -220,17 +228,19 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
             throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last.seq);
           }
           const kept = base.fragments.filter((f) => f.seq < tornMarker.dropFromSeq);
+          const total_events = kept.reduce((sum, f) => sum + f.events, 0);
           return {
             ...base,
             fragments: kept,
-            total_events: kept.reduce((sum, f) => sum + f.events, 0),
+            total_events,
             total_bytes: kept.reduce((sum, f) => sum + f.bytes, 0),
+            next_event_seq: total_events,
             updated_at: new Date().toISOString(),
           };
         },
         parseManifestBuffer,
         serializeManifestBuffer,
-        this.cas,
+        { ...this.cas, known: existing },
       );
     }
     if (closers.length > 0) {
@@ -244,12 +254,12 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
 
   async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     signal?.throwIfAborted();
-    const keys = await this.root.listKeys("sessions/");
+    const prefixes = await this.root.listPrefixes("sessions/");
     const snapshots: SessionPersistenceSnapshot[] = [];
     const seen = new Set<string>();
-    for (const key of keys) {
+    for (const prefix of prefixes) {
       signal?.throwIfAborted();
-      const match = SESSION_MANIFEST_RE.exec(key);
+      const match = SESSION_PREFIX_RE.exec(prefix);
       if (!match) continue;
       const id = match[1]!;
       if (seen.has(id)) continue;

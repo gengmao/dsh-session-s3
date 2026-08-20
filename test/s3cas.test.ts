@@ -194,6 +194,25 @@ describe("S3CasStore", () => {
     expect(calls).toBe(2);
   });
 
+  it("listPrefixes uses Delimiter and returns common prefixes", async () => {
+    const store = new S3CasStore(
+      fakeClient(async (cmd) => {
+        if (!(cmd instanceof ListObjectsV2Command)) throw new Error("expected list");
+        expect(cmd.input.Delimiter).toBe("/");
+        expect(cmd.input.Prefix).toBe("dsh/sessions/");
+        return {
+          CommonPrefixes: [
+            { Prefix: "dsh/sessions/a/" },
+            { Prefix: "dsh/sessions/b/" },
+          ],
+        };
+      }),
+      "bucket",
+      "dsh/",
+    );
+    expect(await store.listPrefixes("sessions/")).toEqual(["sessions/a/", "sessions/b/"]);
+  });
+
   it("GET 500 surfaces as S3AccessError", async () => {
     const store = new S3CasStore(
       fakeClient(async (cmd) => {

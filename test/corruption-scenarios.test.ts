@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 import { S3SessionLog } from "../src/s3log.js";
 import { createProvider } from "../src/provider.js";
 import { FragmentCorruptError } from "../src/errors.js";
-import { fragmentKey } from "../src/fragment.js";
+import { fragmentKey, parseFragment } from "../src/fragment.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
 interface DshEvent {
@@ -144,7 +144,7 @@ describe("7 DSH JSONL corruption scenarios vs wal3-Lite", () => {
     // tail, which lives in the same file as the prefix.
     const prefix = await store.get(fragmentKey(1));
     expect(prefix).not.toBeNull();
-    expect(JSON.parse(prefix!.body.toString().trim()).data).toBe("keep-me");
+    expect(parseFragment(prefix!.body)).toEqual([ev(0, "user/message", "keep-me")]);
   });
 
   it("#1473 one corrupt session does not take down a sibling (list/boot isolation)", async () => {

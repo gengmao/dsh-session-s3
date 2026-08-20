@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ConfigError } from "./errors.js";
+import { ConfigError, S3LogError } from "./errors.js";
 
 const pluginConfigSchema = z
   .object({
@@ -96,5 +96,15 @@ export function normalizePrefix(prefix: string): string {
 }
 
 export function sessionKeyPrefix(prefix: string, sessionId: string): string {
+  assertSessionId(sessionId);
   return `${normalizePrefix(prefix)}sessions/${sessionId}/`;
+}
+
+export function assertSessionId(id: string): void {
+  if (typeof id !== "string" || id.length === 0 || id.length > 512) {
+    throw new S3LogError("session id must be a non-empty string of at most 512 characters", "CONFIG");
+  }
+  if (id.includes("/") || id.includes("\\") || id.includes("\0")) {
+    throw new S3LogError(`session id must not contain '/' or '\\\\': ${JSON.stringify(id)}`, "CONFIG");
+  }
 }

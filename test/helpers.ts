@@ -90,6 +90,19 @@ export class MemoryCasStore implements CasStore {
     return this.keys().filter((key) => key.startsWith(prefix));
   }
 
+  async listPrefixes(prefix = ""): Promise<string[]> {
+    await this.tick();
+    const found = new Set<string>();
+    for (const key of this.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const rest = key.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      if (slash === -1) continue;
+      found.add(`${prefix}${rest.slice(0, slash + 1)}`);
+    }
+    return [...found].sort();
+  }
+
   /** Overwrite bytes in place (same etag) — models bitrot / a torn object. */
   smash(key: string, body: Buffer): void {
     const cur = this.objects.get(key);

@@ -20,15 +20,19 @@ const fragmentRefSchema = z.object({
 const manifestSchema = z.object({
   version: z.literal(1),
   session_id: z.string().min(1),
-  header: sessionHeaderSchema.nullable().optional(),
+  header: z.unknown().nullable().optional(),
   fragments: z.array(fragmentRefSchema),
   total_events: z.number().int().nonnegative(),
   total_bytes: z.number().int().nonnegative(),
+  next_event_seq: z.number().int().nonnegative().optional(),
   updated_at: z.string().min(1),
 });
 
 export type FragmentRef = z.infer<typeof fragmentRefSchema>;
-export type Manifest = z.infer<typeof manifestSchema>;
+export type SessionHeaderFields = z.infer<typeof sessionHeaderSchema>;
+export type Manifest = Omit<z.infer<typeof manifestSchema>, "header"> & {
+  header: SessionHeaderFields | null;
+};
 
 export function emptyManifest(sessionId: string): Manifest {
   return {
@@ -38,8 +42,14 @@ export function emptyManifest(sessionId: string): Manifest {
     fragments: [],
     total_events: 0,
     total_bytes: 0,
+    next_event_seq: 0,
     updated_at: new Date().toISOString(),
   };
+}
+
+/** DSH event-seq watermark. Trim must not decrease this. */
+export function eventSeqWatermark(manifest: Manifest): number {
+  return manifest.next_event_seq ?? manifest.total_events;
 }
 
 export function parseManifest(json: string): Manifest {
@@ -56,14 +66,19 @@ export function parseManifest(json: string): Manifest {
       .join("; ");
     throw new ManifestCorruptError(`manifest.json schema invalid: ${details}`);
   }
-  const manifest = parsed.data;
-  const seqs = manifest.fragments.map((f) => f.seq);
+  const data = parsed.data;
+  const seqs = data.fragments.map((f) => f.seq);
   for (let i = 1; i < seqs.length; i++) {
     if (seqs[i]! <= seqs[i - 1]!) {
       throw new ManifestCorruptError("manifest fragments must be ordered ascending by seq");
     }
   }
-  return manifest;
+  let header: SessionHeaderFields | null = null;
+  if (data.header != null) {
+    const h = sessionHeaderSchema.safeParse(data.header);
+    if (h.success) header = h.data;
+  }
+  return { ...data, header };
 }
 
 export function serializeManifest(manifest: Manifest): string {

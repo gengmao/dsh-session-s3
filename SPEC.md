@@ -60,17 +60,20 @@ interface FragmentRef { seq: number; key: string; bytes: number; sha256: string;
 interface Manifest {
   version: 1;
   session_id: string;
-  header?: SessionHeader | null;  # DSH SessionHeader, written on first appendBatch
+  header?: SessionHeader | null;  # DSH SessionHeader; malformed header is ignored
   fragments: FragmentRef[];       # ordered ascending by seq
   total_events: number;
   total_bytes: number;
+  next_event_seq?: number;        # DSH event-seq watermark; trim must not decrease it
   updated_at: string;             # ISO-8601
 }
 ```
 
 ## 4. Fragment format (fragment.ts)
 
-JSONL: one JSON event per line, `\n`-terminated.
+JSONL: optional `{ "_dsh_frag": 1, ts, nonce }` header line, then one JSON event per line, `\n`-terminated.
+- Durable flushes stamp the header so identical consecutive batches do not share a SHA-256 (lost-CAS retry still uses the same body).
+- `parseFragment` skips a leading wal header; old fragments without one still parse.
 - `jsonLine` / `serializeFragment` throw `FragmentCorruptError` if `JSON.stringify` returns `undefined` (functions, `undefined`).
 - `parseFragment` throws on a non-JSON line.
 - `fragmentKey(seq)` → `fragments/${seq.toString().padStart(8,'0')}.jsonl`
@@ -83,7 +86,7 @@ S3LogError (base, extends Error, has .code)
 ├── ManifestCorruptError   # manifest.json unparsable / schema-invalid / session_id mismatch
 ├── FragmentCorruptError   # fragment unparsable or sha256 mismatch
 ├── CasRetryExhaustedError # CAS or fragment PUT failed after maxRetries (default 10)
-├── StaleWriterError       # DSH backend: SessionEvent.seq ≠ committed total_events inside manifest CAS
+├── StaleWriterError       # DSH backend: SessionEvent.seq ≠ next_event_seq (fallback total_events) inside manifest CAS
 ├── StaleFragmentSeqError  # fragment ordinal ≤ committed tail; publisher reallocates and re-PUTs
 └── S3AccessError          # 403/404/network, wraps original, .statusCode
 ```
@@ -97,6 +100,7 @@ interface CasStore {
   putIfMatch(key: string, body: Buffer, etag: string): Promise<string>;
   delete(key: string): Promise<void>;
   listKeys(prefix?: string): Promise<string[]>;
+  listPrefixes(prefix?: string): Promise<string[]>;  // CommonPrefixes / Delimiter "/"
 }
 ```
 
@@ -121,7 +125,7 @@ Write flow (`flush`), serialized per log:
 3. `putIfAbsent(fragmentKey(seq))`. On 412: LIST `fragments/` for the true max occupied seq, retry.
 4. Conditional PUT `manifest.json` using the ETag from step 2. Reload only after a 412.
 
-Uncontended single-writer flush is **3 S3 requests** (GET + fragment PUT + manifest PUT). `open()` rejects if `manifest.session_id` ≠ the id being opened. `trim(0)` drops every fragment (CAS first, then delete).
+Uncontended single-writer flush is **3 S3 requests** (GET + fragment PUT + manifest PUT). `open()` is lazy (no empty manifest PUT). `open()` rejects if `manifest.session_id` ≠ the id being opened, or if the id contains `/`. `trim` refuses a session whose manifest already has a DSH `header`. `trim(0)` drops every fragment (CAS first, then delete).
 
 ## 9. DSH seam (persistence.ts + backend.ts)
 
@@ -141,9 +145,9 @@ class S3SessionPersistence
 
 Default export is this class. Cordis registers it as `ctx.sessionPersistence`.
 
-Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker: { dropFromSeq, etag, tailSha256 }`); `commitRepair` CAS-rejects if the live tail is no longer that fragment. `list()` reads manifests only so one smashed fragment cannot poison workspace boot.
+Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker: { dropFromSeq, etag, tailSha256 }`); `commitRepair` CAS-rejects if the live etag or tail is no longer that fragment. `listSnapshots` lists `sessions/` with `Delimiter: "/"` then GETs each manifest, so one smashed fragment cannot poison workspace boot.
 
-DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === manifest.total_events` **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq`. Concurrent library flushes reallocate a stale fragment ordinal above the committed tail (they never write `[2, 1]` into the manifest).
+DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === next_event_seq` (falling back to `total_events`) **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. `next_event_seq` is not decreased by trim; `trim` of a DSH-headed session is refused. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq`. Concurrent library flushes reallocate a stale fragment ordinal above the committed tail (they never write `[2, 1]` into the manifest).
 
 Library helper `createProvider` (`provider.ts`) is **not** the DSH seam: `load` / `append` / `read` / `compact` / `close` over `S3SessionLog`.
 

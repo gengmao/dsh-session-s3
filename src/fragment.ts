@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { FragmentCorruptError } from "./errors.js";
+
+const WAL_HEADER_KEY = "_dsh_frag";
 
 export function jsonLine(event: unknown, index = 0): string {
   let json: string | undefined;
@@ -14,10 +16,29 @@ export function jsonLine(event: unknown, index = 0): string {
   return json;
 }
 
-export function serializeFragment(events: readonly unknown[]): Buffer {
+export function serializeFragment(
+  events: readonly unknown[],
+  opts?: { unique?: boolean },
+): Buffer {
   if (events.length === 0) return Buffer.alloc(0);
   const lines = events.map((event, index) => jsonLine(event, index));
+  if (opts?.unique) {
+    const header = JSON.stringify({
+      [WAL_HEADER_KEY]: 1,
+      ts: Date.now(),
+      nonce: randomBytes(8).toString("hex"),
+    });
+    return Buffer.from(`${header}\n${lines.join("\n")}\n`, "utf8");
+  }
   return Buffer.from(`${lines.join("\n")}\n`, "utf8");
+}
+
+function isWalHeader(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)[WAL_HEADER_KEY] === 1
+  );
 }
 
 export function parseFragment(buf: Buffer): unknown[] {
@@ -28,11 +49,14 @@ export function parseFragment(buf: Buffer): unknown[] {
   const events: unknown[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
+    let parsed: unknown;
     try {
-      events.push(JSON.parse(line));
+      parsed = JSON.parse(line);
     } catch (cause) {
       throw new FragmentCorruptError(`fragment line ${i + 1} is not valid JSON`, { cause });
     }
+    if (i === 0 && isWalHeader(parsed)) continue;
+    events.push(parsed);
   }
   return events;
 }
