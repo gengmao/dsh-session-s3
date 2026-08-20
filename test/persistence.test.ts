@@ -82,11 +82,15 @@ describe("S3SessionPersistence (official SessionPersistence + PersistenceCoordin
 
     const storedBefore = await svc.loadStored(SessionId("sess-1"));
     expect(storedBefore?.events).toEqual([quiet(0)]);
-    expect(storedBefore?.tornMarker).toEqual({ dropFromSeq: 2 });
+    expect(storedBefore?.tornMarker).toEqual(
+      expect.objectContaining({ dropFromSeq: 2, etag: expect.any(String), tailSha256: expect.any(String) }),
+    );
 
     const inspected = await svc.inspect(SessionId("sess-1"));
     expect(inspected.events[0]).toEqual(quiet(0));
-    expect(storedBefore?.tornMarker).toEqual({ dropFromSeq: 2 });
+    expect(storedBefore?.tornMarker).toEqual(
+      expect.objectContaining({ dropFromSeq: 2 }),
+    );
 
     await svc.load(SessionId("sess-1"));
     const storedAfter = await svc.loadStored(SessionId("sess-1"));

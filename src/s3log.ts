@@ -9,7 +9,7 @@ import {
 import { casUpdate, type CasStore, type CasUpdateOptions } from "./cas.js";
 import type { ResolvedPluginConfig } from "./config.js";
 import { sessionKeyPrefix } from "./config.js";
-import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, ManifestCorruptError, S3AccessError, S3LogError } from "./errors.js";
+import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, ManifestCorruptError, S3AccessError, S3LogError, StaleFragmentSeqError } from "./errors.js";
 import {
   checkpointKey,
   fragmentKey,
@@ -236,6 +236,98 @@ export async function nextFreeFragmentSeq(store: CasStore, floor: number): Promi
   return Math.max(floor, maxOccupied + 1);
 }
 
+/**
+ * Append `ref` to a manifest. Idempotent on seq+sha and on tail sha256.
+ * Throws StaleFragmentSeqError if `ref.seq` is at or below the committed tail
+ * (caller must re-PUT at a higher ordinal).
+ */
+export function appendFragmentRef(manifest: Manifest, ref: FragmentRef): Manifest {
+  const existing = manifest.fragments.find((f) => f.seq === ref.seq);
+  if (existing) {
+    if (existing.sha256 === ref.sha256) return manifest;
+    throw new StaleFragmentSeqError(ref.seq, existing.seq);
+  }
+  const last = manifest.fragments[manifest.fragments.length - 1];
+  if (last && last.sha256 === ref.sha256 && last.events === ref.events) return manifest;
+  if (last && ref.seq <= last.seq) {
+    throw new StaleFragmentSeqError(ref.seq, last.seq);
+  }
+  return {
+    ...manifest,
+    fragments: [...manifest.fragments, ref],
+    total_events: manifest.total_events + ref.events,
+    total_bytes: manifest.total_bytes + ref.bytes,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export async function publishFragment(
+  store: CasStore,
+  sessionId: string,
+  body: Buffer,
+  eventCount: number,
+  casOpts: CasUpdateOptions | undefined,
+  mutate: (base: Manifest, ref: FragmentRef) => Manifest,
+): Promise<Manifest> {
+  const digest = sha256Hex(body);
+  const existing = await store.get(MANIFEST_KEY);
+  const start = existing ? parseManifestBuffer(existing.body) : emptyManifest(sessionId);
+  const last = start.fragments[start.fragments.length - 1];
+  if (last && last.sha256 === digest && last.events === eventCount) {
+    return start;
+  }
+
+  let seq = (last?.seq ?? 0) + 1;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= MAX_FRAGMENT_PUT_RETRIES; attempt++) {
+    const key = fragmentKey(seq);
+    try {
+      await store.putIfAbsent(key, body);
+    } catch (error) {
+      if (!(error instanceof CasConflictError)) throw error;
+      lastError = error;
+      if (attempt === MAX_FRAGMENT_PUT_RETRIES) break;
+      seq = await bumpFragmentSeq(store, seq);
+      continue;
+    }
+
+    const ref: FragmentRef = {
+      seq,
+      key,
+      bytes: body.byteLength,
+      sha256: digest,
+      events: eventCount,
+    };
+    try {
+      const updated = await casUpdate(
+        store,
+        MANIFEST_KEY,
+        (current) => mutate(current ?? emptyManifest(sessionId), ref),
+        parseManifestBuffer,
+        serializeManifestBuffer,
+        casOpts,
+      );
+      return updated.value;
+    } catch (error) {
+      if (!(error instanceof StaleFragmentSeqError)) throw error;
+      lastError = error;
+      if (attempt === MAX_FRAGMENT_PUT_RETRIES) break;
+      seq = await bumpFragmentSeq(store, seq);
+    }
+  }
+  const exhausted = new CasRetryExhaustedError(MANIFEST_KEY, MAX_FRAGMENT_PUT_RETRIES + 1);
+  if (lastError instanceof Error) exhausted.cause = lastError;
+  throw exhausted;
+}
+
+async function bumpFragmentSeq(store: CasStore, seq: number): Promise<number> {
+  const live = await store.get(MANIFEST_KEY);
+  const tail = live
+    ? (parseManifestBuffer(live.body).fragments.at(-1)?.seq ?? 0)
+    : 0;
+  return nextFreeFragmentSeq(store, Math.max(tail + 1, seq + 1));
+}
+
 export class S3SessionLog {
   private buffer: unknown[] = [];
   private bufferBytes = 0;
@@ -315,53 +407,14 @@ export class S3SessionLog {
     const count = this.buffer.length;
     const events = this.buffer.slice(0, count);
     const body = serializeFragment(events);
-    const digest = sha256Hex(body);
-
-    await this.reloadManifest();
-    const last = this.manifest.fragments[this.manifest.fragments.length - 1];
-    if (last && last.sha256 === digest && last.events === events.length) {
-      this.dropFlushed(count);
-      return;
-    }
-
-    let seq = this.nextSeq();
-    let key = fragmentKey(seq);
-
-    for (let attempt = 0; attempt <= MAX_FRAGMENT_PUT_RETRIES; attempt++) {
-      try {
-        await this.store.putIfAbsent(key, body);
-        break;
-      } catch (error) {
-        if (!(error instanceof CasConflictError)) throw error;
-        if (attempt === MAX_FRAGMENT_PUT_RETRIES) {
-          const exhausted = new CasRetryExhaustedError(key, attempt + 1);
-          if (error instanceof Error) exhausted.cause = error;
-          throw exhausted;
-        }
-        await this.reloadManifest();
-        const fromManifest = this.nextSeq();
-        seq = await nextFreeFragmentSeq(this.store, Math.max(fromManifest, seq + 1));
-        key = fragmentKey(seq);
-      }
-    }
-
-    const ref: FragmentRef = {
-      seq,
-      key,
-      bytes: body.byteLength,
-      sha256: digest,
-      events: events.length,
-    };
-
-    const updated = await casUpdate(
+    this.manifest = await publishFragment(
       this.store,
-      MANIFEST_KEY,
-      (current) => this.appendFragmentRef(current ?? emptyManifest(this.sessionId), ref),
-      parseManifestBuffer,
-      serializeManifestBuffer,
+      this.sessionId,
+      body,
+      events.length,
       this.casOpts,
+      (base, ref) => appendFragmentRef(base, ref),
     );
-    this.manifest = updated.value;
     this.dropFlushed(count);
   }
 
@@ -539,19 +592,6 @@ export class S3SessionLog {
   private lastSeq(): number {
     const last = this.manifest.fragments[this.manifest.fragments.length - 1];
     return last ? last.seq : 0;
-  }
-
-  private appendFragmentRef(manifest: Manifest, ref: FragmentRef): Manifest {
-    if (manifest.fragments.some((f) => f.seq === ref.seq)) return manifest;
-    const last = manifest.fragments[manifest.fragments.length - 1];
-    if (last && last.sha256 === ref.sha256 && last.events === ref.events) return manifest;
-    return {
-      ...manifest,
-      fragments: [...manifest.fragments, ref],
-      total_events: manifest.total_events + ref.events,
-      total_bytes: manifest.total_bytes + ref.bytes,
-      updated_at: new Date().toISOString(),
-    };
   }
 
   private async reloadManifest(): Promise<void> {

@@ -87,6 +87,7 @@ S3LogError (base, extends Error, has .code)
 ├── FragmentCorruptError   # fragment unparsable or sha256 mismatch
 ├── CasRetryExhaustedError # CAS or fragment PUT failed after maxRetries (default 10)
 ├── StaleWriterError       # DSH backend: SessionEvent.seq ≠ committed total_events inside manifest CAS
+├── StaleFragmentSeqError  # fragment ordinal ≤ committed tail; publisher reallocates and re-PUTs
 └── S3AccessError          # 403/404/network, wraps original, .statusCode
 ```
 
@@ -145,9 +146,9 @@ class S3SessionPersistence
 
 Default export is this class. Cordis registers it as `ctx.sessionPersistence`.
 
-Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker.dropFromSeq`); `list()` reads manifests only so one smashed fragment cannot poison workspace boot.
+Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker: { dropFromSeq, etag, tailSha256 }`); `commitRepair` CAS-rejects if the live tail is no longer that fragment. `list()` reads manifests only so one smashed fragment cannot poison workspace boot.
 
-DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === manifest.total_events` **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq` and will still store both batches.
+DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === manifest.total_events` **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq`. Concurrent library flushes reallocate a stale fragment ordinal above the committed tail (they never write `[2, 1]` into the manifest).
 
 Library helper `createProvider` (`provider.ts`) is **not** the DSH seam: `load` / `append` / `read` / `compact` / `close` over `S3SessionLog`.
 
@@ -177,10 +178,10 @@ not reserve event sequence numbers across processes.
 
 ## 11. Tests (vitest, in-memory `MemoryCasStore` unless noted)
 
-- fragment, manifest, cas, s3log (including concurrent-append-during-flush, two-orphan seq, `trim(0)`).
+- fragment, manifest, cas, s3log (including concurrent-append-during-flush, two-orphan seq, `trim(0)`, stale fragment ordinal reallocated above the tail).
 - s3cas: stubbed `S3Client` for 404 / 412 / 500 / quoted `If-Match`.
 - provider: library helper.
-- backend: PersistenceBackend hooks, list isolation, torn tail, **stale-writer fail-closed inside CAS**, lost-response idempotent.
+- backend: PersistenceBackend hooks, list isolation, torn tail, **stale-writer fail-closed inside CAS**, lost-response after committed CAS, **commitRepair refuses to drop a newer tail**.
 - persistence: `instanceof SessionPersistence`, coordinator create/append/load/seq-mismatch, interrupted-turn closer on cold load, torn-tail inspect vs load.
 - corruption-scenarios: the 7 DSH JSONL discussions.
 - Integration (`S3_IT=1`): two-writer CAS + prefix cleanup. Skipped by default.

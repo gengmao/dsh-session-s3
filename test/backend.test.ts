@@ -5,6 +5,7 @@ import { parseConfig } from "../src/config.js";
 import { S3PersistenceBackend } from "../src/backend.js";
 import { StaleWriterError } from "../src/errors.js";
 import { serializeFragment } from "../src/fragment.js";
+import { parseManifestBuffer } from "../src/manifest.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
 function header(id = "sess-1"): SessionHeader {
@@ -78,8 +79,11 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
   });
 
   it("treats a lost CAS response as idempotent, not as a stale writer", async () => {
-    const { backend: b } = backend();
-    await b.appendBatch(header(), [ev(0)], false);
+    const { store, backend: b } = backend();
+    store.crashAfterSuccessfulConditionalPut = true;
+    await expect(b.appendBatch(header(), [ev(0)], false)).rejects.toThrow(/lost CAS response/);
+    const afterCrash = await b.loadStored(SessionId("sess-1"));
+    expect(afterCrash?.events).toEqual([ev(0)]);
     await b.appendBatch(header(), [ev(0)], false);
     const stored = await b.loadStored(SessionId("sess-1"));
     expect(stored?.events).toEqual([ev(0)]);
@@ -101,11 +105,29 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
     store.smash(key, Buffer.from("{not-the-bytes}\n"));
     const stored = await b.loadStored(SessionId("sess-1"));
     expect(stored?.events).toEqual([ev(0)]);
-    expect(stored?.tornMarker).toEqual({ dropFromSeq: 2 });
+    expect(stored?.tornMarker).toEqual(
+      expect.objectContaining({ dropFromSeq: 2, tailSha256: expect.any(String), etag: expect.any(String) }),
+    );
     await b.commitRepair(stored!.meta, stored!.tornMarker, []);
     const after = await b.loadStored(SessionId("sess-1"));
     expect(after?.events).toEqual([ev(0)]);
     expect(after?.tornMarker).toBeUndefined();
+  });
+
+  it("commitRepair refuses to drop a fragment appended after the torn-tail read", async () => {
+    const { store, backend: b } = backend();
+    await b.appendBatch(header(), [ev(0)], false);
+    await b.appendBatch(header(), [ev(1)], true);
+    store.smash("dsh/sessions/sess-1/fragments/00000002.jsonl", Buffer.from("{not-the-bytes}\n"));
+    const stored = await b.loadStored(SessionId("sess-1"));
+    expect(stored?.tornMarker?.dropFromSeq).toBe(2);
+    await b.appendBatch(header(), [ev(2)], true);
+    await expect(b.commitRepair(stored!.meta, stored!.tornMarker, [])).rejects.toBeInstanceOf(
+      StaleWriterError,
+    );
+    const live = await store.get("dsh/sessions/sess-1/manifest.json");
+    const manifest = parseManifestBuffer(live!.body);
+    expect(manifest.fragments.map((f) => f.seq)).toEqual([1, 2, 3]);
   });
 
   it("list skips a session with a corrupt manifest and still returns others", async () => {

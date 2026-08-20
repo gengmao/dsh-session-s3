@@ -74,3 +74,18 @@ export class StaleWriterError extends S3LogError {
     this.got = got;
   }
 }
+
+/** Fragment ordinal is at or below the committed tail; caller must re-PUT above it. */
+export class StaleFragmentSeqError extends S3LogError {
+  readonly fragmentSeq: number;
+  readonly tailSeq: number;
+
+  constructor(fragmentSeq: number, tailSeq: number) {
+    super(
+      `fragment seq ${fragmentSeq} is at or below committed tail ${tailSeq}`,
+      "STALE_FRAGMENT_SEQ",
+    );
+    this.fragmentSeq = fragmentSeq;
+    this.tailSeq = tailSeq;
+  }
+}

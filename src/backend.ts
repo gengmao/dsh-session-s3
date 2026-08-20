@@ -9,8 +9,8 @@ import {
 } from "@deepseek-ai/dsh-session-persistence";
 import { casUpdate, prefixStore, type CasStore, type CasUpdateOptions } from "./cas.js";
 import { sessionKeyPrefix, type ResolvedPluginConfig } from "./config.js";
-import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, S3LogError, StaleWriterError } from "./errors.js";
-import { fragmentKey, parseFragment, serializeFragment, sha256Hex } from "./fragment.js";
+import { FragmentCorruptError, S3LogError, StaleWriterError } from "./errors.js";
+import { parseFragment, serializeFragment, sha256Hex } from "./fragment.js";
 import {
   emptyManifest,
   parseManifestBuffer,
@@ -18,14 +18,17 @@ import {
   type FragmentRef,
   type Manifest,
 } from "./manifest.js";
-import { createS3CasStore, createS3Client, nextFreeFragmentSeq, S3CasStore } from "./s3log.js";
+import { createS3CasStore, createS3Client, appendFragmentRef, publishFragment, S3CasStore } from "./s3log.js";
 
 const MANIFEST_KEY = "manifest.json";
-const MAX_FRAGMENT_PUT_RETRIES = 10;
 const SESSION_MANIFEST_RE = /^sessions\/([^/]+)\/manifest\.json$/;
 
 export interface S3TornMarker {
   dropFromSeq: number;
+  /** Manifest ETag observed when the torn tail was diagnosed. */
+  etag: string;
+  /** SHA-256 of the torn last fragment as recorded in that manifest. */
+  tailSha256: string;
 }
 
 export interface S3PersistenceBackendOptions {
@@ -132,7 +135,7 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
             meta,
             events: events.map((e) => structuredClone(e)),
             revision: this.revision(id, existing.etag),
-            tornMarker: { dropFromSeq: ref.seq },
+            tornMarker: { dropFromSeq: ref.seq, etag: existing.etag, tailSha256: ref.sha256 },
           };
         }
         throw error;
@@ -164,8 +167,6 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
     if (events.length === 0) return;
     const id = meta.id;
     const store = this.storeFor(id);
-    const existing = await store.get(MANIFEST_KEY);
-    const manifest = existing ? parseManifestBuffer(existing.body) : emptyManifest(id);
     for (let i = 1; i < events.length; i++) {
       if (events[i]!.seq !== events[0]!.seq + i) {
         throw new StaleWriterError(id, events[0]!.seq + i, events[i]!.seq);
@@ -173,44 +174,14 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
     }
 
     const body = serializeFragment(events);
-    const digest = sha256Hex(body);
-    let seq = (manifest.fragments[manifest.fragments.length - 1]?.seq ?? 0) + 1;
-    let key = fragmentKey(seq);
-    for (let attempt = 0; attempt <= MAX_FRAGMENT_PUT_RETRIES; attempt++) {
-      try {
-        await store.putIfAbsent(key, body);
-        break;
-      } catch (error) {
-        if (!(error instanceof CasConflictError)) throw error;
-        if (attempt === MAX_FRAGMENT_PUT_RETRIES) {
-          const exhausted = new CasRetryExhaustedError(key, attempt + 1);
-          if (error instanceof Error) exhausted.cause = error;
-          throw exhausted;
-        }
-        const latest = await store.get(MANIFEST_KEY);
-        const live = latest ? parseManifestBuffer(latest.body) : manifest;
-        const fromManifest = (live.fragments[live.fragments.length - 1]?.seq ?? 0) + 1;
-        seq = await nextFreeFragmentSeq(store, Math.max(fromManifest, seq + 1));
-        key = fragmentKey(seq);
-      }
-    }
-
-    const ref: FragmentRef = {
-      seq,
-      key,
-      bytes: body.byteLength,
-      sha256: digest,
-      events: events.length,
-    };
-
-    await casUpdate(
+    await publishFragment(
       store,
-      MANIFEST_KEY,
-      (current) => {
-        const base = current ?? emptyManifest(id);
+      id,
+      body,
+      events.length,
+      this.cas,
+      (base, ref) => {
         const last = base.fragments[base.fragments.length - 1];
-        // Lost CAS response: this batch is already the committed tail, or our
-        // fragment seq is already published. Do not treat as a stale writer.
         if (last && last.sha256 === ref.sha256 && last.events === ref.events) return base;
         if (base.fragments.some((f) => f.seq === ref.seq && f.sha256 === ref.sha256)) return base;
         const expected = base.total_events;
@@ -218,18 +189,14 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
         if (got !== expected) {
           throw new StaleWriterError(id, expected, got);
         }
+        const next = appendFragmentRef(base, ref);
         return {
-          ...base,
-          header: (base.header as Manifest["header"]) ?? (structuredClone(meta) as unknown as Manifest["header"]),
-          fragments: [...base.fragments, ref],
-          total_events: base.total_events + ref.events,
-          total_bytes: base.total_bytes + ref.bytes,
-          updated_at: new Date().toISOString(),
+          ...next,
+          header:
+            (base.header as Manifest["header"]) ??
+            (structuredClone(meta) as unknown as Manifest["header"]),
         };
       },
-      parseManifestBuffer,
-      serializeManifestBuffer,
-      this.cas,
     );
   }
 
@@ -245,12 +212,22 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
         MANIFEST_KEY,
         (current) => {
           const base = current ?? emptyManifest(meta.id);
+          const last = base.fragments[base.fragments.length - 1];
+          if (!last || last.seq < tornMarker.dropFromSeq) {
+            return base;
+          }
+          if (last.seq > tornMarker.dropFromSeq || last.sha256 !== tornMarker.tailSha256) {
+            throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last.seq);
+          }
           const kept = base.fragments.filter((f) => f.seq < tornMarker.dropFromSeq);
+          const dropCheckpoint =
+            base.checkpoint !== null && base.checkpoint.at_seq >= tornMarker.dropFromSeq;
           return {
             ...base,
             fragments: kept,
             total_events: kept.reduce((sum, f) => sum + f.events, 0),
             total_bytes: kept.reduce((sum, f) => sum + f.bytes, 0),
+            checkpoint: dropCheckpoint ? null : base.checkpoint,
             updated_at: new Date().toISOString(),
           };
         },

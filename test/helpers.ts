@@ -7,6 +7,8 @@ export class MemoryCasStore implements CasStore {
   failNextPutIfMatch = 0;
   /** After a successful fragment putIfAbsent, throw (models crash before CAS). */
   crashAfterFragmentPut = false;
+  /** After a successful conditional PUT, throw (models lost CAS response). */
+  crashAfterSuccessfulConditionalPut = false;
   private seq = 0;
   private readonly delayMs: number;
 
@@ -32,9 +34,13 @@ export class MemoryCasStore implements CasStore {
     }
     const etag = this.nextEtag();
     this.objects.set(key, { body: Buffer.from(body), etag });
-    if (this.crashAfterFragmentPut && key.startsWith("fragments/")) {
+    if (this.crashAfterFragmentPut && /(?:^|\/)fragments\/\d+\.jsonl$/.test(key)) {
       this.crashAfterFragmentPut = false;
       throw new Error("simulated crash after fragment PUT, before manifest CAS");
+    }
+    if (this.crashAfterSuccessfulConditionalPut && /(?:^|\/)manifest\.json$/.test(key)) {
+      this.crashAfterSuccessfulConditionalPut = false;
+      throw new Error("simulated lost CAS response");
     }
     return etag;
   }
@@ -51,6 +57,10 @@ export class MemoryCasStore implements CasStore {
     }
     const next = this.nextEtag();
     this.objects.set(key, { body: Buffer.from(body), etag: next });
+    if (this.crashAfterSuccessfulConditionalPut && /(?:^|\/)manifest\.json$/.test(key)) {
+      this.crashAfterSuccessfulConditionalPut = false;
+      throw new Error("simulated lost CAS response");
+    }
     return next;
   }
 

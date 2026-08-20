@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { S3SessionLog } from "../src/s3log.js";
 import { FragmentCorruptError, S3LogError, CasRetryExhaustedError, ManifestCorruptError } from "../src/errors.js";
 import { fragmentKey, serializeFragment, sha256Hex } from "../src/fragment.js";
-import { emptyManifest, serializeManifestBuffer, type Manifest } from "../src/manifest.js";
+import { emptyManifest, parseManifestBuffer, serializeManifestBuffer, type Manifest } from "../src/manifest.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
 async function openLog(store = new MemoryCasStore(), sessionId = "s1") {
@@ -116,6 +116,55 @@ describe("S3SessionLog", () => {
     await resumed.flush();
     expect(store.keys()).toContain("fragments/00000013.jsonl");
     expect(await resumed.readAll()).toEqual([event(0), event(1)]);
+  });
+
+  it("reallocates a stale fragment ordinal above the committed tail", async () => {
+    const store = new MemoryCasStore();
+    const a = await openLog(store);
+    a.append({ from: "a", seq: 0 });
+    store.crashAfterFragmentPut = true;
+    await expect(a.flush()).rejects.toThrow(/simulated crash after fragment PUT/);
+
+    const b = await openLog(store);
+    b.append({ from: "b", seq: 0 });
+    await b.flush();
+
+    await a.flush();
+    const manifest = parseManifestBuffer((await store.get("manifest.json"))!.body);
+    const seqs = manifest.fragments.map((f) => f.seq);
+    expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+    expect(seqs[0]).toBeLessThan(seqs[seqs.length - 1]!);
+    expect(await (await openLog(store)).readAll()).toEqual([
+      { from: "b", seq: 0 },
+      { from: "a", seq: 0 },
+    ]);
+  });
+
+  it("concurrent flushes never produce an out-of-order fragment list", async () => {
+    const store = new MemoryCasStore({ delayMs: 8 });
+    const a = await openLog(store);
+    const b = await openLog(store);
+    a.append({ from: "a" });
+    b.append({ from: "b" });
+    await Promise.all([a.flush(), b.flush()]);
+    const manifest = parseManifestBuffer((await store.get("manifest.json"))!.body);
+    const seqs = manifest.fragments.map((f) => f.seq);
+    for (let i = 1; i < seqs.length; i++) {
+      expect(seqs[i]!).toBeGreaterThan(seqs[i - 1]!);
+    }
+    expect(await (await openLog(store)).readAll()).toHaveLength(2);
+  });
+
+  it("retries flush after a lost manifest CAS response without duplicating", async () => {
+    const store = new MemoryCasStore();
+    const log = await openLog(store);
+    log.append(event(0));
+    store.crashAfterSuccessfulConditionalPut = true;
+    await expect(log.flush()).rejects.toThrow(/lost CAS response/);
+    expect(await (await openLog(store)).readAll()).toEqual([event(0)]);
+    await log.flush();
+    expect(await log.readAll()).toEqual([event(0)]);
+    expect(log.stats.fragmentCount).toBe(1);
   });
 
   it("keeps events appended while flush is in flight", async () => {

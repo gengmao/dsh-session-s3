@@ -176,10 +176,11 @@ exactly one. Preventing two processes from *attempting* the write still
 belongs to DSH (one live owner). CAS is the defensive check for when that
 assumption is violated, not a lease protocol.
 
-The library helper (`S3SessionLog`) still stores opaque JSON and will accept
-both batches; it is not the DSH seam. Corruption-scenario tests against the
-WAL distinguish "storage remains readable" from the backend's fail-closed
-path.
+The library helper (`S3SessionLog`) still stores opaque JSON. Concurrent
+library flushes reallocate a stale fragment ordinal above the committed tail
+and re-upload; they do not append `[2, 1]` to the manifest. Corruption-scenario
+tests against the WAL distinguish "storage remains readable" from the backend's
+fail-closed path.
 
 ## Read and integrity policy
 
@@ -217,6 +218,13 @@ Deleting first could leave the current manifest pointing at a missing object.
 With manifest-first deletion, an interrupted cleanup leaks storage but leaves
 the current logical log readable. `trim()` also verifies the fragments it will
 keep before changing reachability.
+
+`commitRepair` is fail-closed against a concurrent append. The torn marker
+carries the manifest ETag and the torn fragment's SHA-256 from `loadStored`.
+Inside the CAS mutate, repair proceeds only if the live tail is still that
+fragment. If a later fragment has been published, repair throws
+`StaleWriterError` and leaves the new fragment referenced. If the tail is
+already below `dropFromSeq`, repair is a no-op.
 
 This ordering does not protect a reader that fetched an old manifest before
 trim and then fetches a fragment after it was deleted. That reader receives a

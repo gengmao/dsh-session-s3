@@ -6,6 +6,7 @@ export {
   ManifestCorruptError,
   S3AccessError,
   S3LogError,
+  StaleFragmentSeqError,
   StaleWriterError,
 } from "./errors.js";
 export {
@@ -36,11 +37,13 @@ export {
 } from "./manifest.js";
 export { casUpdate, prefixStore, type CasStore, type CasUpdateOptions } from "./cas.js";
 export {
+  appendFragmentRef,
   createS3CasStore,
   createS3Client,
   isNotFound,
   isPreconditionFailed,
   nextFreeFragmentSeq,
+  publishFragment,
   quoteEtag,
   S3CasStore,
   S3SessionLog,
