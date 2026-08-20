@@ -242,6 +242,7 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 5. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. It does **not** interpret `SessionEvent.seq`. Concurrent library flushes reallocate a stale fragment ordinal above the committed tail instead of appending out of order. DSH uses the default class export. **`read()` includes the in-memory buffer** (not yet on S3). `compact` / `close` flush first. `trim` refuses a session that already has a DSH header.
 6. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 7. **Manifest rewrite is O(n) bytes per flush.** Each commit rewrites the whole fragment list, so bytes transferred grow O(n²) over an untrimmed session. Fine for Phase 1; compact long-lived logs.
+8. **Trim guard needs a parseable DSH header.** `trim` refuses a session whose manifest `header` survived schema parse. A *pre-watermark* DSH manifest whose header is malformed parses as `header: null`, so out-of-band compact would not refuse it and could still brick `appendBatch`. That intersection is not coded around.
 
 ## Roadmap
 

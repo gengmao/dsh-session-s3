@@ -210,38 +210,41 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
     if (tornMarker !== undefined) {
       const store = this.storeFor(meta.id);
       const existing = await store.get(MANIFEST_KEY);
-      if (existing && quoteEtag(existing.etag) !== quoteEtag(tornMarker.etag)) {
+      if (!existing) {
+        // Marker is stale; do not putIfAbsent an empty manifest.
+      } else if (quoteEtag(existing.etag) !== quoteEtag(tornMarker.etag)) {
         const live = parseManifestBuffer(existing.body);
         const last = live.fragments[live.fragments.length - 1]?.seq ?? 0;
         throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last);
+      } else {
+        await casUpdate(
+          store,
+          MANIFEST_KEY,
+          (current) => {
+            const base = current ?? emptyManifest(meta.id);
+            const last = base.fragments[base.fragments.length - 1];
+            if (!last || last.seq < tornMarker.dropFromSeq) {
+              return base;
+            }
+            if (last.seq > tornMarker.dropFromSeq || last.sha256 !== tornMarker.tailSha256) {
+              throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last.seq);
+            }
+            const kept = base.fragments.filter((f) => f.seq < tornMarker.dropFromSeq);
+            const total_events = kept.reduce((sum, f) => sum + f.events, 0);
+            return {
+              ...base,
+              fragments: kept,
+              total_events,
+              total_bytes: kept.reduce((sum, f) => sum + f.bytes, 0),
+              next_event_seq: total_events,
+              updated_at: new Date().toISOString(),
+            };
+          },
+          parseManifestBuffer,
+          serializeManifestBuffer,
+          { ...this.cas, known: existing },
+        );
       }
-      await casUpdate(
-        store,
-        MANIFEST_KEY,
-        (current) => {
-          const base = current ?? emptyManifest(meta.id);
-          const last = base.fragments[base.fragments.length - 1];
-          if (!last || last.seq < tornMarker.dropFromSeq) {
-            return base;
-          }
-          if (last.seq > tornMarker.dropFromSeq || last.sha256 !== tornMarker.tailSha256) {
-            throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last.seq);
-          }
-          const kept = base.fragments.filter((f) => f.seq < tornMarker.dropFromSeq);
-          const total_events = kept.reduce((sum, f) => sum + f.events, 0);
-          return {
-            ...base,
-            fragments: kept,
-            total_events,
-            total_bytes: kept.reduce((sum, f) => sum + f.bytes, 0),
-            next_event_seq: total_events,
-            updated_at: new Date().toISOString(),
-          };
-        },
-        parseManifestBuffer,
-        serializeManifestBuffer,
-        { ...this.cas, known: existing },
-      );
     }
     if (closers.length > 0) {
       await this.appendBatch(meta, closers, true);

@@ -145,7 +145,7 @@ class S3SessionPersistence
 
 Default export is this class. Cordis registers it as `ctx.sessionPersistence`.
 
-Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker: { dropFromSeq, etag, tailSha256 }`); `commitRepair` CAS-rejects if the live etag or tail is no longer that fragment. `listSnapshots` lists `sessions/` with `Delimiter: "/"` then GETs each manifest, so one smashed fragment cannot poison workspace boot.
+Storage hooks (`S3PersistenceBackend`): `loadStored`, `readStoredRevision`, `appendBatch`, `commitRepair`, `list`, `listSnapshots`. A last-fragment sha mismatch is a torn tail (`tornMarker: { dropFromSeq, etag, tailSha256 }`); `commitRepair` CAS-rejects if the live etag or tail is no longer that fragment, and is a no-op (does not `putIfAbsent` an empty manifest) if the object is gone. `listSnapshots` lists `sessions/` with `Delimiter: "/"` then GETs each manifest, so one smashed fragment cannot poison workspace boot.
 
 DSH topology is **one live writer per session**. `appendBatch` revalidates `events[0].seq === next_event_seq` (falling back to `total_events`) **inside** the manifest CAS. A stale writer is **rejected** (`StaleWriterError`); its fragment PUT is left as an unreachable orphan. `next_event_seq` is not decreased by trim; `trim` of a DSH-headed session is refused. The library helper `createProvider` / `S3SessionLog` does not interpret `SessionEvent.seq`. Concurrent library flushes reallocate a stale fragment ordinal above the committed tail (they never write `[2, 1]` into the manifest).
 

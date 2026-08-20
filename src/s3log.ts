@@ -317,7 +317,9 @@ export async function publishFragment(
       if (!(error instanceof CasConflictError)) throw error;
       lastError = error;
       if (attempt === MAX_FRAGMENT_PUT_RETRIES) break;
-      seq = await bumpFragmentSeq(store, seq);
+      const bumped = await bumpFragmentSeq(store, seq);
+      seq = bumped.seq;
+      known = bumped.known;
       continue;
     }
 
@@ -342,8 +344,9 @@ export async function publishFragment(
       if (!(error instanceof StaleFragmentSeqError)) throw error;
       lastError = error;
       if (attempt === MAX_FRAGMENT_PUT_RETRIES) break;
-      seq = await bumpFragmentSeq(store, seq);
-      known = await store.get(MANIFEST_KEY);
+      const bumped = await bumpFragmentSeq(store, seq);
+      seq = bumped.seq;
+      known = bumped.known;
     }
   }
   const exhausted = new CasRetryExhaustedError(lastKey, MAX_FRAGMENT_PUT_RETRIES + 1);
@@ -351,12 +354,18 @@ export async function publishFragment(
   throw exhausted;
 }
 
-async function bumpFragmentSeq(store: CasStore, seq: number): Promise<number> {
+async function bumpFragmentSeq(
+  store: CasStore,
+  seq: number,
+): Promise<{ seq: number; known: { body: Buffer; etag: string } | null }> {
   const live = await store.get(MANIFEST_KEY);
   const tail = live
     ? (parseManifestBuffer(live.body).fragments.at(-1)?.seq ?? 0)
     : 0;
-  return nextFreeFragmentSeq(store, Math.max(tail + 1, seq + 1));
+  return {
+    seq: await nextFreeFragmentSeq(store, Math.max(tail + 1, seq + 1)),
+    known: live,
+  };
 }
 
 export class S3SessionLog {

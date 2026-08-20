@@ -195,4 +195,10 @@ describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
     const { backend: b } = backend();
     await expect(b.appendBatch(header("a/b"), [ev(0)], false)).rejects.toThrow(/session id/);
   });
+
+  it("commitRepair with a vanished manifest does not create an empty one", async () => {
+    const { store, backend: b } = backend();
+    await b.commitRepair(header(), { dropFromSeq: 1, etag: '"gone"', tailSha256: "a".repeat(64) }, []);
+    expect(store.keys()).toEqual([]);
+  });
 });
