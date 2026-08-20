@@ -220,14 +220,11 @@ export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
             throw new StaleWriterError(meta.id, tornMarker.dropFromSeq, last.seq);
           }
           const kept = base.fragments.filter((f) => f.seq < tornMarker.dropFromSeq);
-          const dropCheckpoint =
-            base.checkpoint !== null && base.checkpoint.at_seq >= tornMarker.dropFromSeq;
           return {
             ...base,
             fragments: kept,
             total_events: kept.reduce((sum, f) => sum + f.events, 0),
             total_bytes: kept.reduce((sum, f) => sum + f.bytes, 0),
-            checkpoint: dropCheckpoint ? null : base.checkpoint,
             updated_at: new Date().toISOString(),
           };
         },

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  checkpointKey,
   fragmentKey,
   parseFragment,
   seqFromFragmentKey,
@@ -47,11 +46,6 @@ describe("fragment", () => {
     expect(seqFromFragmentKey("fragments/00000003.jsonl")).toBe(3);
     expect(seqFromFragmentKey("dsh/sessions/x/fragments/00000012.jsonl")).toBe(12);
     expect(seqFromFragmentKey("manifest.json")).toBeNull();
-  });
-
-  it("pads checkpoint keys to 8 digits", () => {
-    expect(checkpointKey(0)).toBe("checkpoints/cp-00000000.json");
-    expect(checkpointKey(7)).toBe("checkpoints/cp-00000007.json");
   });
 
   it("rejects non-positive fragment seq", () => {

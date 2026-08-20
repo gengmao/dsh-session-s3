@@ -276,32 +276,6 @@ describe("S3SessionLog", () => {
     await expect(log.trim(-1)).rejects.toBeInstanceOf(S3LogError);
   });
 
-  it("checkpoint + resume replays only post-checkpoint events", async () => {
-    const store = new MemoryCasStore();
-    const log = await openLog(store);
-    log.append(event(0));
-    log.append(event(1));
-    await log.flush();
-    await log.checkpoint({ cursor: 1 });
-    log.append(event(2));
-    log.append(event(3));
-    await log.flush();
-
-    const resumed = await openLog(store);
-    const { state, events } = await resumed.resume();
-    expect(state).toEqual({ cursor: 1 });
-    expect(events).toEqual([event(2), event(3)]);
-  });
-
-  it("resume with no checkpoint returns the full log", async () => {
-    const log = await openLog();
-    log.append(event(0));
-    await log.flush();
-    const { state, events } = await log.resume();
-    expect(state).toBeNull();
-    expect(events).toEqual([event(0)]);
-  });
-
   it("readFrom yields events from fragments with seq >= start", async () => {
     const log = await openLog();
     log.append(event(0));
@@ -375,21 +349,6 @@ describe("S3SessionLog", () => {
     });
     byBytes.append({ pad: "x".repeat(64) });
     expect(byBytes.shouldFlush()).toBe(true);
-  });
-
-  it("trim drops a checkpoint that lived in a deleted fragment seq", async () => {
-    const store = new MemoryCasStore();
-    const log = await openLog(store);
-    log.append(event(0));
-    await log.flush();
-    await log.checkpoint({ v: 1 });
-    log.append(event(1));
-    await log.flush();
-    await log.trim(1);
-    const { state, events } = await log.resume();
-    expect(state).toBeNull();
-    expect(events).toEqual([event(1)]);
-    expect(store.keys().some((k) => k.startsWith("checkpoints/"))).toBe(false);
   });
 
   it("open of a brand-new session writes an empty manifest", async () => {

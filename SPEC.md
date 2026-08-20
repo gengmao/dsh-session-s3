@@ -50,15 +50,13 @@ dsh-session-s3/
 ```
 s3://{bucket}/{prefix}sessions/{sessionId}/
 ├── manifest.json
-├── fragments/{seq8}.jsonl        # seq zero-padded to 8: 00000001.jsonl
-└── checkpoints/cp-{seq8}.json
+└── fragments/{seq8}.jsonl        # seq zero-padded to 8: 00000001.jsonl
 ```
 
 ## 3. Manifest schema (manifest.ts)
 
 ```ts
 interface FragmentRef { seq: number; key: string; bytes: number; sha256: string; events: number }
-interface CheckpointRef { at_seq: number; blob: string; sha256: string }
 interface Manifest {
   version: 1;
   session_id: string;
@@ -66,7 +64,6 @@ interface Manifest {
   fragments: FragmentRef[];       # ordered ascending by seq
   total_events: number;
   total_bytes: number;
-  checkpoint: CheckpointRef | null;
   updated_at: string;             # ISO-8601
 }
 ```

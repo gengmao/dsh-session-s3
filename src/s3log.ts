@@ -11,7 +11,6 @@ import type { ResolvedPluginConfig } from "./config.js";
 import { sessionKeyPrefix } from "./config.js";
 import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, ManifestCorruptError, S3AccessError, S3LogError, StaleFragmentSeqError } from "./errors.js";
 import {
-  checkpointKey,
   fragmentKey,
   jsonLine,
   parseFragment,
@@ -435,67 +434,6 @@ export class S3SessionLog {
     }
   }
 
-  async checkpoint(state: unknown): Promise<void> {
-    await this.flush();
-    const atSeq = this.lastSeq();
-    const blob = checkpointKey(atSeq);
-    const body = Buffer.from(JSON.stringify(state), "utf8");
-    const digest = sha256Hex(body);
-    try {
-      await this.store.putIfAbsent(blob, body);
-    } catch (error) {
-      if (!(error instanceof CasConflictError)) throw error;
-      const existing = await this.store.get(blob);
-      if (!existing || sha256Hex(existing.body) !== digest) {
-        throw new FragmentCorruptError(`checkpoint ${blob} already exists with different content`);
-      }
-    }
-    const updated = await casUpdate(
-      this.store,
-      MANIFEST_KEY,
-      (current) => {
-        const manifest = current ?? emptyManifest(this.sessionId);
-        return {
-          ...manifest,
-          checkpoint: { at_seq: atSeq, blob, sha256: digest },
-          updated_at: new Date().toISOString(),
-        };
-      },
-      parseManifestBuffer,
-      serializeManifestBuffer,
-      this.casOpts,
-    );
-    this.manifest = updated.value;
-  }
-
-  async resume(): Promise<{ state: unknown | null; events: unknown[] }> {
-    await this.reloadManifest();
-    const checkpoint = this.manifest.checkpoint;
-    if (!checkpoint) {
-      return { state: null, events: await this.readAll() };
-    }
-    const blob = await this.store.get(checkpoint.blob);
-    if (!blob) {
-      throw new FragmentCorruptError(`checkpoint blob missing: ${checkpoint.blob}`);
-    }
-    if (sha256Hex(blob.body) !== checkpoint.sha256) {
-      throw new FragmentCorruptError(`checkpoint sha256 mismatch: ${checkpoint.blob}`);
-    }
-    let state: unknown;
-    try {
-      state = JSON.parse(blob.body.toString("utf8"));
-    } catch (cause) {
-      throw new FragmentCorruptError(`checkpoint blob is not valid JSON: ${checkpoint.blob}`, {
-        cause,
-      });
-    }
-    const events: unknown[] = [];
-    for await (const event of this.readFrom(checkpoint.at_seq + 1)) {
-      events.push(event);
-    }
-    return { state, events };
-  }
-
   async trim(keepLastNFragments: number): Promise<void> {
     if (!Number.isInteger(keepLastNFragments) || keepLastNFragments < 0) {
       throw new S3LogError(
@@ -523,8 +461,6 @@ export class S3SessionLog {
     }
 
     const droppedSeqs = new Set(dropped.map((f) => f.seq));
-    const checkpoint = this.manifest.checkpoint;
-    const dropCheckpoint = checkpoint !== null && droppedSeqs.has(checkpoint.at_seq);
 
     const updated = await casUpdate(
       this.store,
@@ -532,16 +468,11 @@ export class S3SessionLog {
       (current) => {
         const manifest = current ?? emptyManifest(this.sessionId);
         const nextFragments = manifest.fragments.filter((f) => !droppedSeqs.has(f.seq));
-        const nextCheckpoint =
-          manifest.checkpoint && droppedSeqs.has(manifest.checkpoint.at_seq)
-            ? null
-            : manifest.checkpoint;
         return {
           ...manifest,
           fragments: nextFragments,
           total_events: nextFragments.reduce((sum, f) => sum + f.events, 0),
           total_bytes: nextFragments.reduce((sum, f) => sum + f.bytes, 0),
-          checkpoint: nextCheckpoint,
           updated_at: new Date().toISOString(),
         };
       },
@@ -553,9 +484,6 @@ export class S3SessionLog {
 
     for (const ref of dropped) {
       await this.store.delete(ref.key);
-    }
-    if (dropCheckpoint && checkpoint) {
-      await this.store.delete(checkpoint.blob);
     }
   }
 
@@ -587,11 +515,6 @@ export class S3SessionLog {
   private nextSeq(): number {
     const last = this.manifest.fragments[this.manifest.fragments.length - 1];
     return last ? last.seq + 1 : 1;
-  }
-
-  private lastSeq(): number {
-    const last = this.manifest.fragments[this.manifest.fragments.length - 1];
-    return last ? last.seq : 0;
   }
 
   private async reloadManifest(): Promise<void> {

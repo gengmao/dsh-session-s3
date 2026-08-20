@@ -194,8 +194,7 @@ A retry should 412. If it always 200s, the store is ignoring preconditions and t
 ```
 s3://{bucket}/{prefix}sessions/{sessionId}/
 ├── manifest.json                 # CAS coordination point
-├── fragments/00000001.jsonl      # immutable, SHA-256 in the manifest
-└── checkpoints/cp-00000001.json
+└── fragments/00000001.jsonl      # immutable, SHA-256 in the manifest
 ```
 
 Write path (`flush`):

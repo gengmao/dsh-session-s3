@@ -17,12 +17,6 @@ const fragmentRefSchema = z.object({
   events: z.number().int().nonnegative(),
 });
 
-const checkpointRefSchema = z.object({
-  at_seq: z.number().int().nonnegative(),
-  blob: z.string().min(1),
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
-});
-
 const manifestSchema = z.object({
   version: z.literal(1),
   session_id: z.string().min(1),
@@ -30,12 +24,10 @@ const manifestSchema = z.object({
   fragments: z.array(fragmentRefSchema),
   total_events: z.number().int().nonnegative(),
   total_bytes: z.number().int().nonnegative(),
-  checkpoint: checkpointRefSchema.nullable(),
   updated_at: z.string().min(1),
 });
 
 export type FragmentRef = z.infer<typeof fragmentRefSchema>;
-export type CheckpointRef = z.infer<typeof checkpointRefSchema>;
 export type Manifest = z.infer<typeof manifestSchema>;
 
 export function emptyManifest(sessionId: string): Manifest {
@@ -46,7 +38,6 @@ export function emptyManifest(sessionId: string): Manifest {
     fragments: [],
     total_events: 0,
     total_bytes: 0,
-    checkpoint: null,
     updated_at: new Date().toISOString(),
   };
 }

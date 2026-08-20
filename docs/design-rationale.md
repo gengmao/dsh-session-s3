@@ -33,7 +33,7 @@ standalone WAL have different responsibilities.
 | Layer | Role | Enforced semantics |
 | --- | --- | --- |
 | `S3SessionPersistence` + `S3PersistenceBackend` | The DSH plugin seam | DSH headers and events, coordinator preparation and repair, contiguous event-seq checks at batch entry, list/snapshot behavior |
-| `createProvider()` + `S3SessionLog` | A five-method library helper | Arbitrary JSON events, in-memory buffering, thresholds, checkpoints, fragment-count trimming |
+| `createProvider()` + `S3SessionLog` | A five-method library helper | Arbitrary JSON events, in-memory buffering, thresholds, fragment-count trimming |
 | `CasStore` / `S3CasStore` | Shared storage primitive | Conditional create/update, object lookup, delete, and prefix listing |
 
 The two public APIs therefore have similar storage behavior but are not
@@ -78,7 +78,7 @@ make ordering ambiguous.
 
 `manifest.json` is the reachability index. A fragment is part of the logical
 log if and only if the current manifest references it. The manifest also keeps
-the session header, aggregate counts, and the optional checkpoint pointer in a
+The manifest also keeps the session header and aggregate counts in a
 single versioned snapshot.
 
 There is one manifest per session. Unrelated sessions never contend on a
@@ -212,7 +212,7 @@ a whole-log cryptographic proof.
 Removal reverses the write order:
 
 1. CAS-update the manifest so dropped objects are no longer reachable.
-2. Delete the now-unreferenced fragment or checkpoint objects.
+2. Delete the now-unreferenced fragment objects.
 
 Deleting first could leave the current manifest pointing at a missing object.
 With manifest-first deletion, an interrupted cleanup leaks storage but leaves
@@ -235,12 +235,6 @@ belong to a slow writer that has not yet attempted its manifest CAS. Safe GC
 needs at least a grace period plus a fresh reachability check, and stronger
 designs also use leases or fencing. Treating every unreferenced object as
 immediately dead would reintroduce a delete-versus-publish race.
-
-Checkpoint state is stored in a separate immutable, checksummed object and
-published by a manifest pointer. This keeps potentially large state out of the
-hot CAS object. `checkpoint.at_seq` is a fragment ordinal, not a DSH event
-sequence; resume replays fragments after that boundary. Trimming the fragment
-that owns the checkpoint also clears and deletes the checkpoint.
 
 ## Operational tradeoffs
 

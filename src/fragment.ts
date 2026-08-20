@@ -55,10 +55,3 @@ export function seqFromFragmentKey(key: string): number | null {
   const seq = Number(match[1]);
   return Number.isInteger(seq) && seq >= 1 ? seq : null;
 }
-
-export function checkpointKey(seq: number): string {
-  if (!Number.isInteger(seq) || seq < 0) {
-    throw new FragmentCorruptError(`checkpoint seq must be a non-negative integer, got ${seq}`);
-  }
-  return `checkpoints/cp-${seq.toString().padStart(8, "0")}.json`;
-}

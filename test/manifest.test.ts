@@ -19,7 +19,6 @@ function sample(): Manifest {
     ],
     total_events: 3,
     total_bytes: 15,
-    checkpoint: { at_seq: 1, blob: "checkpoints/cp-00000001.json", sha256: sha },
     updated_at: "2026-08-19T00:00:00.000Z",
   };
 }
@@ -32,7 +31,6 @@ describe("manifest", () => {
     expect(m.fragments).toEqual([]);
     expect(m.total_events).toBe(0);
     expect(m.total_bytes).toBe(0);
-    expect(m.checkpoint).toBeNull();
     expect(m.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
@@ -41,9 +39,10 @@ describe("manifest", () => {
     expect(parseManifest(serializeManifest(original))).toEqual(original);
   });
 
-  it("round-trips checkpoint: null", () => {
-    const original = { ...sample(), checkpoint: null };
-    expect(parseManifest(serializeManifest(original)).checkpoint).toBeNull();
+  it("strips a leftover checkpoint field from older manifests", () => {
+    const raw = { ...sample(), checkpoint: { at_seq: 1, blob: "x", sha256: sha } };
+    const parsed = parseManifest(JSON.stringify(raw));
+    expect(parsed).not.toHaveProperty("checkpoint");
   });
 
   it("throws on invalid json", () => {

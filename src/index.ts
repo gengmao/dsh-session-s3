@@ -19,7 +19,6 @@ export {
   DEFAULT_REGION,
 } from "./config.js";
 export {
-  checkpointKey,
   fragmentKey,
   jsonLine,
   parseFragment,
@@ -31,7 +30,6 @@ export {
   emptyManifest,
   parseManifest,
   serializeManifest,
-  type CheckpointRef,
   type FragmentRef,
   type Manifest,
 } from "./manifest.js";
