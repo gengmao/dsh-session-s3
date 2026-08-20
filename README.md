@@ -213,15 +213,14 @@ S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 \
 
 ## Caveats
 
-1. **Duck-typed seam.** This plugin registers as Cordis `ctx.sessionPersistence` (`locate` / `create` / `append` / `load` / `inspect` / `readFrom` / `list` / `listSnapshots` / `prepare`) and listens for `session/created`, `session/event`, `session/flush`, `session/disposed`. It does **not** subclass `@deepseek-ai/dsh-session-persistence`'s abstract `SessionPersistence` (that package is not independently installable) or wrap `PersistenceCoordinator`, so `instanceof SessionPersistence` is false and DSH's synthetic interrupted-turn closers are not emitted on cold `load`. Appends whose first `seq` ≠ stored next-seq **reject**.
+1. **Same composition as JSONL.** `S3SessionPersistence` extends `@deepseek-ai/dsh-session-persistence`'s `SessionPersistence` and implements `PersistenceBackend`, then constructs `PersistenceCoordinator(ctx, this)`. Cold `load` therefore emits synthetic interrupted-turn closers; `instanceof SessionPersistence` is true. Peer deps (`cordis`, `dsh-session`, `dsh-session-persistence`) are provided by the DSH profile at install time.
 2. **No setsum** (deliberate, Phase 2). Integrity is per-fragment SHA-256 only.
-3. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256; a lost response after a *fragment* PUT (orphan) is skipped.
-4. **Library `createProvider()`** is the old 5-method helper (`load`/`append`/`read`/`compact`/`close`). DSH uses `S3SessionPersistence` (the default export).
+3. **At-least-once fragments.** If a manifest CAS succeeds on the server but the response is lost, a retry may write a second fragment. The CAS mutate is idempotent on fragment seq and on the tail sha256.
+4. **Library `createProvider()`** is a 5-method helper (`load`/`append`/`read`/`compact`/`close`) for non-DSH callers. DSH uses the default class export.
 5. **Trim vs concurrent readers.** `trim` CAS-updates the manifest, then deletes dropped objects. A reader holding an old manifest that GETs a deleted fragment sees `FragmentCorruptError`. Phase 1 assumes one writer and no trim-during-read.
 
 ## Roadmap
 
-- Wrap DSH `PersistenceCoordinator` once `@deepseek-ai/dsh-session-persistence` is independently installable (synthetic closers, write-behind, live-writer refusal)
 - Phase 2 — setsum / global log verification, verified GC
 - Optional — binary fragments, DynamoDB Streams notifications
 

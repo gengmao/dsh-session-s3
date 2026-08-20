@@ -12,7 +12,7 @@
 #   profile slot id  = sessions          (replaces dsh-session-persistence-jsonl)
 #   plugin package   = dsh-session-s3
 #   cordis.yml id    = dsh-session-persistence-s3
-#   Cordis service   = sessionPersistence  (ctx.sessionPersistence)
+#   Cordis service   = sessionPersistence  (extends official SessionPersistence)
 
 - id: sessions
   name: dsh-session-s3

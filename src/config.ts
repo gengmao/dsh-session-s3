@@ -12,6 +12,8 @@ const pluginConfigSchema = z
     secretAccessKey: z.string().min(1).optional(),
     flushThresholdEvents: z.number().int().positive().optional(),
     flushThresholdBytes: z.number().int().positive().optional(),
+    preparedSessionCacheSize: z.number().int().positive().optional(),
+    writeBatchMaxDelayMs: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -27,6 +29,8 @@ export interface ResolvedPluginConfig {
   secretAccessKey?: string;
   flushThresholdEvents: number;
   flushThresholdBytes: number;
+  preparedSessionCacheSize?: number;
+  writeBatchMaxDelayMs?: number;
 }
 
 export const DEFAULT_PREFIX = "dsh/";
@@ -81,6 +85,8 @@ export function parseConfig(input: unknown): ResolvedPluginConfig {
     secretAccessKey: cfg.secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY,
     flushThresholdEvents: cfg.flushThresholdEvents ?? DEFAULT_FLUSH_EVENTS,
     flushThresholdBytes: cfg.flushThresholdBytes ?? DEFAULT_FLUSH_BYTES,
+    preparedSessionCacheSize: cfg.preparedSessionCacheSize,
+    writeBatchMaxDelayMs: cfg.writeBatchMaxDelayMs,
   };
 }
 

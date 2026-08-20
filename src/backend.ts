@@ -1,3 +1,12 @@
+import type { SessionEvent, SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
+import { SessionId as asSessionId } from "@deepseek-ai/dsh-session";
+import {
+  SessionPersistenceRevision,
+  type PersistenceBackend,
+  type SessionLocation,
+  type SessionPersistenceSnapshot,
+  type StoredPrefix,
+} from "@deepseek-ai/dsh-session-persistence";
 import { casUpdate, prefixStore, type CasStore, type CasUpdateOptions } from "./cas.js";
 import { sessionKeyPrefix, type ResolvedPluginConfig } from "./config.js";
 import { CasConflictError, CasRetryExhaustedError, FragmentCorruptError, S3LogError } from "./errors.js";
@@ -7,6 +16,7 @@ import {
   parseManifestBuffer,
   serializeManifestBuffer,
   type FragmentRef,
+  type Manifest,
 } from "./manifest.js";
 import { createS3CasStore, createS3Client, S3CasStore } from "./s3log.js";
 
@@ -14,49 +24,8 @@ const MANIFEST_KEY = "manifest.json";
 const MAX_FRAGMENT_PUT_RETRIES = 10;
 const SESSION_MANIFEST_RE = /^sessions\/([^/]+)\/manifest\.json$/;
 
-/** SessionHeader-shaped metadata stored in the CAS manifest. */
-export interface PersistHeader {
-  version: number;
-  id: string;
-  createdAt: number;
-  cwd?: string;
-  parentSession?: string;
-  seedLength?: number;
-  origin?: "subagent";
-  delegationDepth?: number;
-  agentPreset?: string;
-  [key: string]: unknown;
-}
-
-/** SessionEvent-shaped record. `seq` is assigned by DSH, not by this store. */
-export interface PersistEvent {
-  type: string;
-  seq: number;
-  time: number;
-  data: unknown;
-  ignorable?: true;
-  [key: string]: unknown;
-}
-
 export interface S3TornMarker {
   dropFromSeq: number;
-}
-
-export interface StoredPrefix {
-  meta: PersistHeader;
-  events: PersistEvent[];
-  revision: string;
-  tornMarker?: S3TornMarker;
-}
-
-export interface SessionLocation {
-  readonly kind: string;
-  readonly path: string;
-}
-
-export interface SessionSnapshot {
-  header: PersistHeader;
-  revision: string;
 }
 
 export interface S3PersistenceBackendOptions {
@@ -65,29 +34,32 @@ export interface S3PersistenceBackendOptions {
   cas?: CasUpdateOptions;
 }
 
-function asEvent(value: unknown): PersistEvent {
+function asEvent(value: unknown): SessionEvent {
   if (typeof value !== "object" || value === null) {
     throw new FragmentCorruptError("fragment event is not an object");
   }
-  const rec = value as PersistEvent;
+  const rec = value as SessionEvent;
   if (typeof rec.seq !== "number" || typeof rec.type !== "string") {
     throw new FragmentCorruptError("fragment event missing seq/type");
   }
   return rec;
 }
 
-function headerFromManifest(
-  manifest: { header?: PersistHeader | null; fragments: FragmentRef[] },
-  sessionId: string,
-): PersistHeader | null {
-  if (manifest.header && typeof manifest.header.id === "string") {
-    return structuredClone(manifest.header) as PersistHeader;
-  }
-  if (manifest.fragments.length === 0) return null;
-  return { version: 0, id: sessionId, createdAt: 0 };
+function asHeader(value: unknown): SessionHeader | null {
+  if (typeof value !== "object" || value === null) return null;
+  const rec = value as SessionHeader;
+  if (typeof rec.id !== "string") return null;
+  return structuredClone(rec) as SessionHeader;
 }
 
-export class S3PersistenceBackend {
+function headerFromManifest(manifest: Manifest, sessionId: string): SessionHeader | null {
+  const fromStore = asHeader(manifest.header);
+  if (fromStore) return fromStore;
+  if (manifest.fragments.length === 0) return null;
+  return { version: 0, id: asSessionId(sessionId), createdAt: 0 };
+}
+
+export class S3PersistenceBackend implements PersistenceBackend<S3TornMarker> {
   readonly name = "session-persistence-s3";
   private readonly root: CasStore;
   private readonly storeFor: (sessionId: string) => CasStore;
@@ -122,14 +94,17 @@ export class S3PersistenceBackend {
     });
   }
 
-  locate(meta: PersistHeader): SessionLocation {
+  locate(meta: SessionHeader): SessionLocation {
     return {
       kind: "s3",
       path: `s3://${this.config.bucket}/${sessionKeyPrefix(this.config.prefix, meta.id)}`,
     };
   }
 
-  async loadStored(id: string, signal?: AbortSignal): Promise<StoredPrefix | undefined> {
+  async loadStored(
+    id: SessionId,
+    signal?: AbortSignal,
+  ): Promise<StoredPrefix<S3TornMarker> | undefined> {
     signal?.throwIfAborted();
     const store = this.storeFor(id);
     const existing = await store.get(MANIFEST_KEY);
@@ -145,7 +120,7 @@ export class S3PersistenceBackend {
       );
     }
 
-    const events: PersistEvent[] = [];
+    const events: SessionEvent[] = [];
     for (const ref of manifest.fragments) {
       signal?.throwIfAborted();
       try {
@@ -170,7 +145,10 @@ export class S3PersistenceBackend {
     };
   }
 
-  async readStoredRevision(id: string, signal?: AbortSignal): Promise<string | undefined> {
+  async readStoredRevision(
+    id: SessionId,
+    signal?: AbortSignal,
+  ): Promise<SessionPersistenceRevision | undefined> {
     signal?.throwIfAborted();
     const existing = await this.storeFor(id).get(MANIFEST_KEY);
     signal?.throwIfAborted();
@@ -179,8 +157,8 @@ export class S3PersistenceBackend {
   }
 
   async appendBatch(
-    meta: PersistHeader,
-    events: readonly PersistEvent[],
+    meta: SessionHeader,
+    events: readonly SessionEvent[],
     _isMaterialized: boolean,
   ): Promise<void> {
     if (events.length === 0) return;
@@ -241,7 +219,7 @@ export class S3PersistenceBackend {
         if (last && last.sha256 === ref.sha256 && last.events === ref.events) return base;
         return {
           ...base,
-          header: (base.header as PersistHeader | null) ?? structuredClone(meta),
+          header: (base.header as Manifest["header"]) ?? (structuredClone(meta) as unknown as Manifest["header"]),
           fragments: [...base.fragments, ref],
           total_events: base.total_events + ref.events,
           total_bytes: base.total_bytes + ref.bytes,
@@ -255,9 +233,9 @@ export class S3PersistenceBackend {
   }
 
   async commitRepair(
-    meta: PersistHeader,
+    meta: SessionHeader,
     tornMarker: S3TornMarker | undefined,
-    closers: readonly PersistEvent[],
+    closers: readonly SessionEvent[],
   ): Promise<void> {
     if (tornMarker !== undefined) {
       const store = this.storeFor(meta.id);
@@ -285,14 +263,14 @@ export class S3PersistenceBackend {
     }
   }
 
-  async list(signal?: AbortSignal): Promise<PersistHeader[]> {
+  async list(signal?: AbortSignal): Promise<SessionHeader[]> {
     return (await this.listSnapshots(signal)).map((s) => s.header);
   }
 
-  async listSnapshots(signal?: AbortSignal): Promise<SessionSnapshot[]> {
+  async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     signal?.throwIfAborted();
     const keys = await this.root.listKeys("sessions/");
-    const snapshots: SessionSnapshot[] = [];
+    const snapshots: SessionPersistenceSnapshot[] = [];
     const seen = new Set<string>();
     for (const key of keys) {
       signal?.throwIfAborted();
@@ -309,10 +287,9 @@ export class S3PersistenceBackend {
         seen.add(id);
         snapshots.push({
           header: structuredClone(meta),
-          revision: this.revision(id, existing.etag),
+          revision: this.revision(asSessionId(id), existing.etag),
         });
       } catch {
-        // One unreadable manifest must not take down list() / workspace boot.
         continue;
       }
     }
@@ -320,20 +297,22 @@ export class S3PersistenceBackend {
   }
 
   async readRaw(
-    id: string,
+    id: SessionId,
     signal?: AbortSignal,
-  ): Promise<{ meta: PersistHeader; filename: string; content: string } | undefined> {
+  ): Promise<{ meta: SessionHeader; filename: string; content: string } | undefined> {
     const stored = await this.loadStored(id, signal);
     if (!stored) return undefined;
     const lines = [JSON.stringify(stored.meta), ...stored.events.map((e) => JSON.stringify(e))];
     return { meta: stored.meta, filename: "session.jsonl", content: `${lines.join("\n")}\n` };
   }
 
-  private revision(id: string, etag: string): string {
-    return `s3:${this.config.bucket}/${sessionKeyPrefix(this.config.prefix, id)}:${etag}`;
+  private revision(id: string, etag: string): SessionPersistenceRevision {
+    return SessionPersistenceRevision(
+      `s3:${this.config.bucket}/${sessionKeyPrefix(this.config.prefix, id)}:${etag}`,
+    );
   }
 
-  private async readFragment(store: CasStore, ref: FragmentRef): Promise<PersistEvent[]> {
+  private async readFragment(store: CasStore, ref: FragmentRef): Promise<SessionEvent[]> {
     const object = await store.get(ref.key);
     if (!object) throw new FragmentCorruptError(`fragment missing: ${ref.key}`);
     if (sha256Hex(object.body) !== ref.sha256) {

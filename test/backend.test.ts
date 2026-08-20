@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { SessionId } from "@deepseek-ai/dsh-session";
+import type { SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
 import { parseConfig } from "../src/config.js";
-import { S3PersistenceBackend, type PersistEvent, type PersistHeader } from "../src/backend.js";
-import { FragmentCorruptError } from "../src/errors.js";
+import { S3PersistenceBackend } from "../src/backend.js";
 import { serializeFragment } from "../src/fragment.js";
 import { MemoryCasStore, fastCas } from "./helpers.js";
 
-function header(id = "sess-1"): PersistHeader {
-  return { version: 0, id, createdAt: 1_700_000_000_000, cwd: "/work" };
+function header(id = "sess-1"): SessionHeader {
+  return { version: 0, id: SessionId(id), createdAt: 1_700_000_000_000, cwd: "/work" };
 }
 
-function ev(seq: number, type = "user/message"): PersistEvent {
-  return { seq, type, time: 1_700_000_000_000 + seq, data: { n: seq } };
+function ev(seq: number): SessionEvent {
+  return { type: "turn/start", seq, time: 1_700_000_000_000 + seq, data: { turn: seq } };
 }
 
 function backend(store = new MemoryCasStore()) {
@@ -24,7 +25,7 @@ function backend(store = new MemoryCasStore()) {
   };
 }
 
-describe("S3PersistenceBackend", () => {
+describe("S3PersistenceBackend (PersistenceBackend hooks)", () => {
   it("create is lazy: list is empty until the first appendBatch", async () => {
     const { backend: b } = backend();
     expect(await b.list()).toEqual([]);
@@ -33,7 +34,7 @@ describe("S3PersistenceBackend", () => {
   it("appendBatch materializes header + events atomically", async () => {
     const { backend: b } = backend();
     await b.appendBatch(header(), [ev(0), ev(1)], false);
-    const stored = await b.loadStored("sess-1");
+    const stored = await b.loadStored(SessionId("sess-1"));
     expect(stored?.meta).toMatchObject({ id: "sess-1", cwd: "/work" });
     expect(stored?.events).toEqual([ev(0), ev(1)]);
     expect(await b.list()).toEqual([expect.objectContaining({ id: "sess-1" })]);
@@ -61,11 +62,11 @@ describe("S3PersistenceBackend", () => {
     await b.appendBatch(header(), [ev(1)], true);
     const key = "dsh/sessions/sess-1/fragments/00000002.jsonl";
     store.smash(key, Buffer.from("{not-the-bytes}\n"));
-    const stored = await b.loadStored("sess-1");
+    const stored = await b.loadStored(SessionId("sess-1"));
     expect(stored?.events).toEqual([ev(0)]);
     expect(stored?.tornMarker).toEqual({ dropFromSeq: 2 });
     await b.commitRepair(stored!.meta, stored!.tornMarker, []);
-    const after = await b.loadStored("sess-1");
+    const after = await b.loadStored(SessionId("sess-1"));
     expect(after?.events).toEqual([ev(0)]);
     expect(after?.tornMarker).toBeUndefined();
   });
@@ -74,10 +75,7 @@ describe("S3PersistenceBackend", () => {
     const { store, backend: b } = backend();
     await b.appendBatch(header("good"), [ev(0)], false);
     await b.appendBatch(header("bad"), [ev(0)], false);
-    store.smash(
-      "dsh/sessions/bad/manifest.json",
-      Buffer.from("not-json"),
-    );
+    store.smash("dsh/sessions/bad/manifest.json", Buffer.from("not-json"));
     const listed = await b.list();
     expect(listed.map((h) => h.id)).toEqual(["good"]);
   });
@@ -97,7 +95,7 @@ describe("S3PersistenceBackend", () => {
   it("readRaw concatenates header + events as JSONL", async () => {
     const { backend: b } = backend();
     await b.appendBatch(header(), [ev(0)], false);
-    const raw = await b.readRaw("sess-1");
+    const raw = await b.readRaw(SessionId("sess-1"));
     expect(raw?.filename).toBe("session.jsonl");
     const lines = raw!.content.trim().split("\n");
     expect(JSON.parse(lines[0]!)).toMatchObject({ id: "sess-1" });
