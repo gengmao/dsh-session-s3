@@ -1,0 +1,7 @@
+{
+  "name": "dsh-session-s3",
+  "user": "ubuntu",
+  "install": "./.cursor/install.sh",
+  "start": "./.cursor/start.sh",
+  "ports": [9000, 9001]
+}
