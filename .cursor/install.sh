@@ -2,6 +2,7 @@
 # Idempotent repository bootstrap for dsh-session-s3.
 # Installs node dependencies and fetches the MinIO binary used by the
 # env-gated integration suite (Docker is not available in Cloud Agent VMs).
+# Bring MinIO up on demand with ./.cursor/minio-up.sh before running S3_IT=1 tests.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

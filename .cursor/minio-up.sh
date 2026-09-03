@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Per-boot startup for dsh-session-s3.
-# Starts a local MinIO (S3-compatible, supports If-Match/If-None-Match CAS) so the
-# env-gated integration suite (S3_IT=1) can run without Docker. Idempotent.
+# On-demand MinIO helper for dsh-session-s3.
+# Starts a local MinIO (S3-compatible, supports If-Match/If-None-Match CAS) and
+# creates the integration-test bucket so the env-gated suite (S3_IT=1) can run
+# without Docker. Idempotent: safe to run repeatedly. Run this before:
+#   S3_IT=1 S3_BUCKET=test S3_ENDPOINT=http://127.0.0.1:9000 S3_REGION=us-east-1 \
+#     AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin npm test
 set -euo pipefail
 
 MINIO_BIN="$HOME/.local/bin/minio"
