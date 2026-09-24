@@ -9,10 +9,14 @@ cd "$(dirname "$0")/.."
 
 npm ci
 
+# dl.min.io no longer serves the community binary (returns HTTP 410), so pull the
+# pinned release asset from GitHub instead. Keep this in sync with the RELEASE tag
+# used by the CI "MinIO integration" job.
+MINIO_RELEASE="RELEASE.2025-09-07T16-13-09Z"
 MINIO_BIN="$HOME/.local/bin/minio"
 if [ ! -x "$MINIO_BIN" ]; then
   mkdir -p "$(dirname "$MINIO_BIN")"
   curl -sSfL -o "$MINIO_BIN" \
-    https://dl.min.io/server/minio/release/linux-amd64/minio
+    "https://github.com/minio/minio/releases/download/${MINIO_RELEASE}/minio.linux-amd64.${MINIO_RELEASE}"
   chmod +x "$MINIO_BIN"
 fi
